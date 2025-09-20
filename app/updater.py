@@ -7,10 +7,10 @@ import tempfile
 import time
 import requests
 from packaging.version import Version
-from app.version import __version__
+from version import __version__
 
 GITHUB_OWNER = "michalneoral"              # <-- change
-GITHUB_REPO  = "test_kinetika"                 # <-- change
+GITHUB_REPO  = "Kinetika-Epoxidace"                 # <-- change
 ASSET_PREFIX = "myapp-setup-"          # e.g. myapp-setup-1.2.3.exe
 TIMEOUT_S    = 10
 
