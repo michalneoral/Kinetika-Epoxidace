@@ -2,12 +2,12 @@ import argparse
 import os
 import streamlit as st
 import pandas as pd
-from webapp.core import extract_df, validate_table
-from webapp.utils import REQUIRED_FAME, REQUIRED_EPO
-from webapp.processing import TableProcessor
-from webapp.kinetic_model import InitConditions
+from app.webapp.core import extract_df, validate_table
+from app.webapp.utils import REQUIRED_FAME, REQUIRED_EPO
+from app.webapp.processing import TableProcessor
+from app.webapp.kinetic_model import InitConditions
 
-from webapp.config_manager import (
+from app.webapp.config_manager import (
     load_config, save_config, list_configs,
     CONFIG_DIR, RECENT_CONFIG, get_timestamped_filename
 )

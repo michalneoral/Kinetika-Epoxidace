@@ -10,17 +10,17 @@ import os
 curve_configs = []
 plot_config = {}
 
-from webapp.advanced_plotting import AdvancedPlotter
+from app.webapp.advanced_plotting import AdvancedPlotter
 import random
 import pandas as pd
-from webapp.core import extract_df, validate_table
-from webapp.utils import REQUIRED_FAME, REQUIRED_EPO
-from webapp.processing import TableProcessor
+from app.webapp.core import extract_df, validate_table
+from app.webapp.utils import REQUIRED_FAME, REQUIRED_EPO
+from app.webapp.processing import TableProcessor
 from rich import print
 from concurrent.futures import ThreadPoolExecutor
-from webapp.config import AdvancedGraphConfig
-from webapp.gui.graph_tab import GraphTab
-from webapp.gui.style.load_style import load_style
+from app.webapp.config import AdvancedGraphConfig
+from app.webapp.gui.graph_tab import GraphTab
+from app.webapp.gui.style.load_style import load_style
 
 
 executor = ThreadPoolExecutor(max_workers=2)

@@ -7,7 +7,7 @@ import tempfile
 import time
 import requests
 from packaging.version import Version
-from version import __version__
+from app.version import __version__
 
 GITHUB_OWNER = "michalneoral"              # <-- change
 GITHUB_REPO  = "Kinetika-Epoxidace"                 # <-- change

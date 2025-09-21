@@ -1,11 +1,11 @@
 import streamlit as st
 import os
-from webapp.advanced_plotting import AdvancedPlotter
+from app.webapp.advanced_plotting import AdvancedPlotter
 import random
 import pandas as pd
-from webapp.core import extract_df, validate_table
-from webapp.utils import REQUIRED_FAME, REQUIRED_EPO
-from webapp.processing import TableProcessor
+from app.webapp.core import extract_df, validate_table
+from app.webapp.utils import REQUIRED_FAME, REQUIRED_EPO
+from app.webapp.processing import TableProcessor
 from rich import print
 
 st.set_page_config(layout="wide")

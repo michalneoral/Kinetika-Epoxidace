@@ -1,5 +1,5 @@
 from nicegui import ui
-from webapp.config import ColorConfig
+from app.webapp.config import ColorConfig
 from abc import ABC, abstractmethod
 from dataclasses import asdict
 

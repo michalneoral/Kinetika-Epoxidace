@@ -5,18 +5,18 @@ from typing import List
 import os
 import pandas as pd
 
-from webapp.config import ProcessingConfig
-from webapp.core import extract_df, extract_df_dict, validate_table
-from webapp.utils import REQUIRED_FAME, REQUIRED_EPO
-from webapp.processing import TableProcessor, get_possible_models
-from webapp.kinetic_model import InitConditions
+from app.webapp.config import ProcessingConfig
+from app.webapp.core import extract_df, extract_df_dict, validate_table
+from app.webapp.utils import REQUIRED_FAME, REQUIRED_EPO
+from app.webapp.processing import TableProcessor, get_possible_models
+from app.webapp.kinetic_model import InitConditions
 import logging
 from io import BytesIO
-from webapp.gui.styled_elements.label import StyledLabel
-from webapp.gui.utils.tables import sanitize_df_for_table
-from webapp.gui.utils.plots import update_plot_image
-from webapp.gui.utils.latex import LatexLabel, typeset_latex
-from webapp.gui.abstract_tab import AbstractTab
+from app.webapp.gui.styled_elements.label import StyledLabel
+from app.webapp.gui.utils.tables import sanitize_df_for_table
+from app.webapp.gui.utils.plots import update_plot_image
+from app.webapp.gui.utils.latex import LatexLabel, typeset_latex
+from app.webapp.gui.abstract_tab import AbstractTab
 
 from concurrent.futures import ThreadPoolExecutor
 import asyncio

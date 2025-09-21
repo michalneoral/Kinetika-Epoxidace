@@ -3,23 +3,23 @@ from typing import List
 import os
 import pandas as pd
 
-from webapp.core import extract_df, extract_df_dict, validate_table
-from webapp.gui.styled_elements.custom_color_picker import CustomColorPicker, ColorPickerButton
-from webapp.gui.utils.context import disable
-from webapp.utils import REQUIRED_FAME, REQUIRED_EPO
-from webapp.processing import TableProcessor
-from webapp.kinetic_model import InitConditions
+from app.webapp.core import extract_df, extract_df_dict, validate_table
+from app.webapp.gui.styled_elements.custom_color_picker import CustomColorPicker, ColorPickerButton
+from app.webapp.gui.utils.context import disable
+from app.webapp.utils import REQUIRED_FAME, REQUIRED_EPO
+from app.webapp.processing import TableProcessor
+from app.webapp.kinetic_model import InitConditions
 import logging
 from io import BytesIO
-from webapp.gui.styled_elements.label import StyledLabel
-from webapp.gui.utils.tables import sanitize_df_for_table
-from webapp.gui.utils.plots import update_plot_image, export_all_figures_as_zip
-from webapp.gui.utils.latex import LatexLabel, typeset_latex
-from webapp.advanced_plotting import AdvancedPlotter
-from webapp.config import SingleCurveConfig, AdvancedGraphConfig, default_colors, GridConfig
+from app.webapp.gui.styled_elements.label import StyledLabel
+from app.webapp.gui.utils.tables import sanitize_df_for_table
+from app.webapp.gui.utils.plots import update_plot_image, export_all_figures_as_zip
+from app.webapp.gui.utils.latex import LatexLabel, typeset_latex
+from app.webapp.advanced_plotting import AdvancedPlotter
+from app.webapp.config import SingleCurveConfig, AdvancedGraphConfig, default_colors, GridConfig
 from dataclasses import asdict
 from concurrent.futures import ThreadPoolExecutor
-from webapp.gui.abstract_tab import AbstractTab
+from app.webapp.gui.abstract_tab import AbstractTab
 import asyncio
 import httpx
 

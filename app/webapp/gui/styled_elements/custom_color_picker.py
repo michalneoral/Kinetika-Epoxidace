@@ -5,7 +5,7 @@ from nicegui.element import Element
 from nicegui.events import ColorPickEventArguments, GenericEventArguments, Handler, handle_event
 from nicegui.elements.menu import Menu
 from nicegui import ui
-from webapp.utils.colors import convert_color
+from app.webapp.utils.colors import convert_color
 
 class ColorPickerButton:
     def __init__(self, *,

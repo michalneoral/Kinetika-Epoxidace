@@ -14,3 +14,6 @@ PyYAML~=6.0.2
 platformdirs~=4.3.7
 scipy~=1.15.2
 plotly~=6.2.0
+openpyxl
+latex2mathml
+

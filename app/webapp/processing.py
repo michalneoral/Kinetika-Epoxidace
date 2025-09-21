@@ -1,5 +1,5 @@
 import pandas as pd
-from webapp.kinetic_model import KineticModel, InitConditions, OptimumTShift
+from app.webapp.kinetic_model import KineticModel, InitConditions, OptimumTShift
 import numpy as np
 from rich import print
 import traceback

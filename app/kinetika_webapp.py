@@ -5,23 +5,23 @@ import os
 
 import threading
 import time
-from version import __version__
-from updater import maybe_update_in_background
+from app.version import __version__
+from app.updater import maybe_update_in_background
 
-from webapp.config import GuiConfig
-from webapp.gui.utils.latex import LatexLabel, typeset_latex
-from webapp.gui.processing_tab import ProcessingTab
-from webapp.gui.tables_tab import TableTab
-from webapp.processing import TableProcessor
+from app.webapp.config import GuiConfig
+from app.webapp.gui.utils.latex import LatexLabel, typeset_latex
+from app.webapp.gui.processing_tab import ProcessingTab
+from app.webapp.gui.tables_tab import TableTab
+from app.webapp.processing import TableProcessor
 from concurrent.futures import ThreadPoolExecutor
 
-from webapp.config import Config
+from app.webapp.config import Config
 import httpx
 
 from nicegui import events, ui
-from webapp.gui.style.load_style import load_style
-from webapp.gui.input_tab import InputTab
-from webapp.gui.graph_tab import GraphTab
+from app.webapp.gui.style.load_style import load_style
+from app.webapp.gui.input_tab import InputTab
+from app.webapp.gui.graph_tab import GraphTab
 import matplotlib
 matplotlib.use('Agg')
 
@@ -154,7 +154,7 @@ def run_nicegui_app():
     Kinetika(theme, config)
 
     ui.run(title=main_page_title, favicon="📊", **asdict(config.gui),
-           reload=False, port=8082, show=False)
+           reload=False, port=8082, show=True)
 
 
 if __name__ in {"__main__", "__mp_main__"}:
@@ -168,7 +168,7 @@ if __name__ in {"__main__", "__mp_main__"}:
     threading.Thread(target=maybe_update_in_background, daemon=True).start()
 
     if args.debug_cli:
-        from webapp.cli_debug import run_debug_cli
+        from app.webapp.cli_debug import run_debug_cli
 
         if os.path.exists(args.debug_cli):
             run_debug_cli(args.debug_cli)

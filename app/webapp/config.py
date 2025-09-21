@@ -8,12 +8,12 @@ from enum import Enum
 import yaml
 from dataclasses import field, dataclass, asdict, is_dataclass
 from abc import ABC, abstractmethod
-from webapp.utils import StrEnum
-from webapp.kinetic_model import InitConditions
+from app.webapp.utils import StrEnum
+from app.webapp.kinetic_model import InitConditions
 from platformdirs import user_data_dir, user_documents_path
-from webapp.processing import get_possible_models
+from app.webapp.processing import get_possible_models
 
-from webapp.utils.logging import _LOGGER
+from app.webapp.utils.logging import _LOGGER
 
 default_colors = ["#FF0000", "#000000", "#5B0687", "#777777", "#0000FF", "#00FF00", "#00FFFF"]
 default_colors = [d.lower() for d in default_colors]

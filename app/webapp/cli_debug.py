@@ -1,15 +1,15 @@
 # cli_debug.py
 import pandas as pd
-from webapp.core import extract_df, validate_table
-from webapp.utils import REQUIRED_FAME, REQUIRED_EPO
-from webapp.processing import TableProcessor
+from app.webapp.core import extract_df, validate_table
+from app.webapp.utils import REQUIRED_FAME, REQUIRED_EPO
+from app.webapp.processing import TableProcessor
 from rich import print
-from webapp.graphs import plot_kinetic_fit
+from app.webapp.graphs import plot_kinetic_fit
 import matplotlib
 print(matplotlib.get_backend())
 # matplotlib.use("TkAgg")
 # print(matplotlib.get_backend())
-from webapp.advanced_plotting import AdvancedPlotter
+from app.webapp.advanced_plotting import AdvancedPlotter
 
 def run_debug_cli(path_to_excel):
     print("=== DEBUG MODE ===")

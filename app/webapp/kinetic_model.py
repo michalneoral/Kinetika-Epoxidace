@@ -4,8 +4,8 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.optimize import minimize
 import matplotlib.pyplot as plt
-from webapp.constants import K_MIN, K_MAX
-from webapp.utils import StrEnum
+from app.webapp.constants import K_MIN, K_MAX
+from app.webapp.utils import StrEnum
 from matplotlib.lines import Line2D
 import plotly.graph_objects as go
 

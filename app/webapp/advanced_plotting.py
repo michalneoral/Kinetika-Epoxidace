@@ -4,7 +4,7 @@ from copy import deepcopy
 from matplotlib.lines import Line2D
 from typing import Union, Tuple
 import matplotlib.colors as mcolors
-from webapp.utils.colors import convert_color
+from app.webapp.utils.colors import convert_color
 
 class AdvancedPlotter:
     def __init__(self, name, model):

@@ -11,7 +11,7 @@ from nicegui.events import (
     ValueChangeEventArguments,
     handle_event,
 )
-from webapp.config import ColorConfig
+from app.webapp.config import ColorConfig
 
 StickyOption = Literal['header', 'column', 'both', 'none']
 
