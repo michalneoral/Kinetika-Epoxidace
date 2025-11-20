@@ -20,6 +20,7 @@ from app.webapp.config import SingleCurveConfig, AdvancedGraphConfig, default_co
 from dataclasses import asdict
 from concurrent.futures import ThreadPoolExecutor
 from app.webapp.gui.abstract_tab import AbstractTab
+from app.webapp.gui.styled_elements.toggle_button import ToggleButton
 import asyncio
 import httpx
 
@@ -37,6 +38,23 @@ class GraphTab(AbstractTab):
         self.plotter_config = {}
         self.plots = {}
         self.plot_enabled = False
+        self.all_buttons = []
+
+    def position_mouse_handler(self, e: events.MouseEventArguments, graph_name=None):
+        if graph_name is None:
+            return
+        axis_size = self.plotters[graph_name].get_axes_values()
+        width, height = axis_size['fig_w'], axis_size['fig_h']
+        rel_x = e.image_x / width  # in [0, 1]
+        rel_y = e.image_y / height  # in [0, 1]
+        x,y = self.plotters[graph_name].rel_to_data(rel_x, rel_y)
+        for b in self.all_buttons:
+            if b.is_on():
+                config = b.get_config()
+                config.additional_text_x = x
+                config.additional_text_y = y
+                b.turn_off()
+                break
 
     @ui.refreshable
     def show(self, *args, **kwargs):
@@ -56,7 +74,8 @@ class GraphTab(AbstractTab):
                     with ui.row().classes('w-full flex-wrap gap-4 justify-center'):
                         # LEFT SIDE: Image
                         with ui.column().classes('flex-1 min-w-[300px] items-end'):
-                            image_element = ui.image().classes('max-w-xl')
+                            image_element = ui.interactive_image(on_mouse=lambda e, c_name=plotter.name: self.position_mouse_handler(e, graph_name=c_name),
+                                                                 cross=False).classes('max-w-xl')
                             self.plots[plotter.name] = image_element
 
                         # RIGHT SIDE: Expandable controls
@@ -350,9 +369,20 @@ class GraphTab(AbstractTab):
                     add_text_y.bind_value(c_curve_config, 'additional_text_y')
                     all_controls.append(add_text_y)
 
+                    add_text_click = ToggleButton(icon='add_location_alt',
+                                                  config=c_curve_config,
+                                                  on_click=self.handle_pick_location_button_click)
+                    self.all_buttons.append(add_text_click)
+
         # c_input.on('click', lambda: ui.notify('You clicked the button B.'))
         # c_input.on('focus', lambda: ui.notify('You focus the button B.'))
         # c_input.on('blur', lambda: ui.notify('You blur (unfocus) the button B.'))
+
+    def handle_pick_location_button_click(self, e):
+        for b in self.all_buttons:
+            if b != e.sender:
+                b.turn_off()
+        # e.sender.turn_on()
 
     def handle_color_change(self, e, name, button):
         print('handle color change')

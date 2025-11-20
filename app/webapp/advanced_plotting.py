@@ -6,12 +6,14 @@ from typing import Union, Tuple
 import matplotlib.colors as mcolors
 from app.webapp.utils.colors import convert_color
 
+
 class AdvancedPlotter:
     def __init__(self, name, model):
         self.name = name
         self.model = model
         self.data = {}
         self.extract_data_from_model()
+        self.axes_values = None
 
     def extract_data_from_model(self, t_max=2000, time_points=2000):
         # Column names
@@ -70,7 +72,8 @@ class AdvancedPlotter:
         xlabel = config['xlabel']
         ylabel = config['ylabel']
         x_lim_value = config['xlim']
-        if 'xlim_min' in config and config['xlim_min'] is not None and 'xlim_max' in config and config['xlim_max'] is not None:
+        if 'xlim_min' in config and config['xlim_min'] is not None and 'xlim_max' in config and config[
+            'xlim_max'] is not None:
             x_lim_value = (min(config['xlim_min'], config['xlim_max']), max(config['xlim_min'], config['xlim_max']))
         xlim_mode = config['xlim_mode']
         xlim = self.xlim_mode_selector(x_lim_value, xlim_mode)
@@ -78,7 +81,8 @@ class AdvancedPlotter:
         grid_config_minor = config['grid_config_minor']
 
         y_lim_value = config['ylim']
-        if 'ylim_min' in config and config['ylim_min'] is not None and 'ylim_max' in config and config['ylim_max'] is not None:
+        if 'ylim_min' in config and config['ylim_min'] is not None and 'ylim_max' in config and config[
+            'ylim_max'] is not None:
             y_lim_value = (min(config['ylim_min'], config['ylim_max']), max(config['ylim_min'], config['ylim_max']))
         ylim_mode = config['ylim_mode']
         ylim = self.ylim_mode_selector(y_lim_value, ylim_mode)
@@ -134,7 +138,8 @@ class AdvancedPlotter:
         # print(grid_config)
         if grid_config_minor is not None and grid_config_minor.get("visible", True):
             if 'color' in grid_config_minor:
-                grid_config_minor['color'], grid_config_minor['alpha'] = convert_color(grid_config_minor['color'], 'rgb-a')
+                grid_config_minor['color'], grid_config_minor['alpha'] = convert_color(grid_config_minor['color'],
+                                                                                       'rgb-a')
             plt.grid(**grid_config_minor)
             plt.minorticks_on()
         if grid_config is not None and grid_config.get("visible", True):
@@ -146,6 +151,8 @@ class AdvancedPlotter:
         # print(grid_config_minor)
 
         plt.tight_layout()
+
+        self.save_axes_values(fig, ax)
 
         if not ui:
             plt.show()
@@ -189,7 +196,6 @@ class AdvancedPlotter:
             xlim = None
         return xlim
 
-
     def ylim_mode_selector(self, ylim, ylim_mode):
         if ylim_mode == 'default':
             ylim = (0, 1)
@@ -198,3 +204,88 @@ class AdvancedPlotter:
         else:
             ylim = None
         return ylim
+
+    def rel_to_data(self, rel_x: float, rel_y: float):
+        """
+        Convert a relative click (0..1 in whole image) into graph data coordinates,
+        using only normalized axes bbox (nx0, ny0, nx1, ny1) and xlim/ylim.
+        """
+
+        v = self.axes_values
+
+        nx0, ny0 = v["nx0"] / 100, v["ny0"] / 100
+        nx1, ny1 = v["nx1"] / 100, v["ny1"] / 100
+        xmin, xmax = v["xlim"]
+        ymin, ymax = v["ylim"]
+
+        # # ----- 1) Check if click is inside the axes region -----
+        # if not (nx0 <= rel_x <= nx1 and ny0 <= rel_y <= ny1):
+        #     return None, None  # outside graph area
+
+        # ----- 2) Normalize click inside axes -----
+        # relative position inside graph (0..1)
+        ax_rel_x = (rel_x - nx0) / (nx1 - nx0)
+
+        # Y coordinate is inverted (browser vs matplotlib)
+        ax_rel_y = ((1 - rel_y) - ny0) / (ny1 - ny0)
+
+        # ----- 3) Map to data coordinates -----
+        X = xmin + ax_rel_x * (xmax - xmin)
+        Y = ymin + ax_rel_y * (ymax - ymin)
+        return X, Y
+
+    def save_axes_values(self, fig, ax):
+        """
+        Extracts all geometric information needed to convert pixel clicks
+        (from a rendered PNG) into Matplotlib data coordinates.
+
+        Stores:
+            - figure pixel size (fig_w, fig_h)
+            - axes bounding box in pixel coordinates (x0,y0,x1,y1)
+            - normalized bbox (0..1)
+            - data limits (xlim, ylim)
+            - DPI
+        """
+        # --- FIGURE SIZE IN PIXELS ---
+        fig_w, fig_h = fig.get_size_inches() * fig.dpi
+
+        # --- AXES BOUNDING BOX (pixel coords) ---
+        # get_window_extent returns in display/pixel units
+        bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans)
+        x0, y0, x1, y1 = bbox.x0, bbox.y0, bbox.x1, bbox.y1
+
+        # --- NORMALIZED AXIS BBOX (0..1) ---
+        nx0 = x0 / fig_w
+        ny0 = y0 / fig_h
+        nx1 = x1 / fig_w
+        ny1 = y1 / fig_h
+
+        # --- DATA LIMITS ---
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+
+        # Store results
+        self.axes_values = {
+            "fig_w": float(fig_w),
+            "fig_h": float(fig_h),
+            "dpi": float(fig.dpi),
+
+            # axes in pixels
+            "x0": float(x0),
+            "y0": float(y0),
+            "x1": float(x1),
+            "y1": float(y1),
+
+            # axes in normalized [0,1]
+            "nx0": float(nx0),
+            "ny0": float(ny0),
+            "nx1": float(nx1),
+            "ny1": float(ny1),
+
+            # data ranges
+            "xlim": (float(xlim[0]), float(xlim[1])),
+            "ylim": (float(ylim[0]), float(ylim[1])),
+        }
+
+    def get_axes_values(self):
+        return self.axes_values
