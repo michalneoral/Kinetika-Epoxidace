@@ -1,3 +1,5 @@
+# app/webapp/gui/utils/latex.py
+
 from nicegui import ui
 import re
 
@@ -5,17 +7,14 @@ import re
 if not hasattr(ui, '_mathjax_loaded'):
     ui.add_body_html(r"""
     <script>
-    window.mathjax_loaded = false;
-    MathJax = {
-      tex: {
-        inlineMath: [['$', '$'], ['\\(', '\\)']],
-        displayMath: [['$$', '$$'], ['\\[', '\\]']]
-      },
-      svg: { fontCache: 'global' }
-    };
-    </script>
-    <script>
-    window.mathjax_loaded = true;
+      // Configure MathJax before loading the script
+      window.MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']]
+        },
+        svg: { fontCache: 'global' }
+      };
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
     """)
@@ -23,16 +22,12 @@ if not hasattr(ui, '_mathjax_loaded'):
 
 
 def typeset_latex():
-    """Schedule MathJax typesetting with a short delay"""
-    def try_typeset():
-        ui.run_javascript("""
-        if (window.MathJax && window.mathjax_loaded) {
+    """Ask MathJax to typeset the page (queued by NiceGUI until page is ready)."""
+    ui.run_javascript("""
+        if (window.MathJax) {
             MathJax.typeset();
-        } else {
-            setTimeout(() => MathJax.typeset(), 50);
         }
-        """)
-    ui.timer(0.2, try_typeset, once=True)
+    """)
 
 
 class LatexLabel:
@@ -40,17 +35,18 @@ class LatexLabel:
         self.text = text
         self.element = self._render(text)
         typeset_latex()
+        raise NotImplementedError('This part of code does not work after update')
 
     def _contains_latex(self, text: str) -> bool:
         return (
-            re.search(r'\$\$(.*?)\$\$', text, re.DOTALL) or
-            r'\begin{' in text
+            re.search(r'\$\$(.*?)\$\$', text, re.DOTALL)
+            or r'\\begin{' in text
         )
 
     def _render(self, text: str):
         if self._contains_latex(text):
-            html_element = ui.html(f'<p>{text}</p>')
-            return html_element
+            # IMPORTANT in NiceGUI 3: disable sanitization for raw LaTeX markup
+            return ui.html(f'<p>{text}</p>', sanitize=False)
         else:
             return ui.markdown(text)
 

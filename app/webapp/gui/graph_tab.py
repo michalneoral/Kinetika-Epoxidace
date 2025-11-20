@@ -109,13 +109,18 @@ class GraphTab(AbstractTab):
             with ui.row().classes('justify-center w-full'):
                 ui.markdown(f"#### Výsledky pro {name}")
             if model.k_fit is not None:
-                # latex_eq = r",\quad ".join([f"k_{{{i + 1}}} = {k:.5f}" for i, k in enumerate(model.k_fit)])
-                latex_eq = r"$$\begin{aligned}" + "\n" + "\n".join(
-                    [r"k_{" + f"{idx + 1}" + r"}" + f" = {k['latex']} &= {k['value']:.8f} \\\\"
-                     for idx, k in
-                     enumerate(model.get_constants_with_names())]
-                ) + r"\end{aligned}$$"
-                LatexLabel(rf"""{latex_eq}""")
+                # THIS DOES NOT WORK currently
+                # # latex_eq = r",\quad ".join([f"k_{{{i + 1}}} = {k:.5f}" for i, k in enumerate(model.k_fit)])
+                # latex_eq = r"$$\begin{aligned}" + "\n" + "\n".join(
+                #     [r"k_{" + f"{idx + 1}" + r"}" + f" = {k['latex']} &= {k['value']:.8f} \\\\"
+                #      for idx, k in
+                #      enumerate(model.get_constants_with_names())]
+                # ) + r"\end{aligned}$$"
+                # LatexLabel(rf"""{latex_eq}""")
+
+                for idx, k in enumerate(model.get_constants_with_names()):
+                    ui.markdown(r"$$k_{" + f"{idx + 1}" + r"}" + f" = {k['latex']} = {k['value']:.8f}$$", extras=['latex'])
+
                 for idx, k in enumerate(model.get_constants_with_names()):
                     latex_eq_pure = ("k_{" + f"{idx + 1}" + "}" + f" = {k['latex']} = {k['value']:.8f}" +
                                      " \\mathrm{min}^{-1}")

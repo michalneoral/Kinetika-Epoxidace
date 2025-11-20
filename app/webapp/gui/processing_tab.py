@@ -146,13 +146,19 @@ class ProcessingTab(AbstractTab):
                                 StyledLabel("Chyba při vykreslování grafu:", 'error')
                                 ui.label(traceback.format_exc())
 
-                            # latex_eq = r",\quad ".join([f"k_{{{i + 1}}} = {k:.5f}" for i, k in enumerate(model.k_fit)])
-                            latex_eq = r"$$\begin{aligned}" + "\n" + "\n".join(
-                                [r"k_{" + f"{idx + 1}" + r"}" + f" = {k['latex']} &= {k['value']:.8f} \\\\" for idx, k in
-                                 enumerate(model.get_constants_with_names())]
-                            ) + r"\end{aligned}$$"
-                            print(latex_eq)
-                            LatexLabel(rf"""{latex_eq}""")
+                            # THIS DOES NOT WORK currently
+                            # # latex_eq = r",\quad ".join([f"k_{{{i + 1}}} = {k:.5f}" for i, k in enumerate(model.k_fit)])
+                            # latex_eq = r"$$\begin{aligned}" + "\n" + "\n".join(
+                            #     [r"k_{" + f"{idx + 1}" + r"}" + f" = {k['latex']} &= {k['value']:.8f} \\\\" for idx, k in
+                            #      enumerate(model.get_constants_with_names())]
+                            # ) + r"\end{aligned}$$"
+                            # print(latex_eq)
+                            # LatexLabel(rf"""{latex_eq}""")
+
+                            with ui.column():
+                                for idx, k in enumerate(model.get_constants_with_names()):
+                                    ui.markdown(r"$$k_{" + f"{idx + 1}" + r"}" + f" = {k['latex']} = {k['value']:.8f}$$",
+                                                extras=['latex'])
 
                             ui.separator()
                         else:
