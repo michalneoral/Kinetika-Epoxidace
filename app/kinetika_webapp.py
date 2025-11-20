@@ -23,6 +23,7 @@ from app.webapp.gui.style.load_style import load_style
 from app.webapp.gui.input_tab import InputTab
 from app.webapp.gui.graph_tab import GraphTab
 import matplotlib
+
 matplotlib.use('Agg')
 
 executor = ThreadPoolExecutor(max_workers=2)
@@ -30,16 +31,20 @@ executor = ThreadPoolExecutor(max_workers=2)
 main_page_title = 'KINETIKA'
 sub_title = None
 
-class Kinetika():
-    def __init__(self, theme, config):
+
+class Kinetika:
+    def __init__(self, theme, config, args):
         self.theme = theme
         self.tab_value = 'input'
         self.main_page_title = 'KINETIKA'
+        self.debug = args.debug
 
         self.config = config
         self.gui_config = GuiConfig()
         self.dark_mode = ui.dark_mode()
         self.dark_mode.bind_value(self.gui_config, 'dark')
+
+        self._propagate_enabled = False
 
         # Central definition of tabs
         self.tabs_meta = {
@@ -50,30 +55,46 @@ class Kinetika():
         }
 
         self.page_title_label = ui.label('').classes('text-4xl font-bold')
-
         processor = TableProcessor()
-        self.input_tab = InputTab(processor, theme=theme)
-        self.tables_tab = TableTab(processor, theme=theme)
-        self.input_tab.add_refreshable_element(self.tables_tab)
-        self.processing_tab = ProcessingTab(processor, executor, theme=theme)
-        self.input_tab.add_refreshable_element(self.processing_tab)
-        self.graphs_tab = GraphTab(processor, executor, theme=theme)
-        self.processing_tab.add_refreshable_element(self.graphs_tab)
 
-        # Build the UI
-        # with ui.header().classes(replace='row items-center h-16'):
-        #     ui.image('https://fcht.upce.cz/sites/default/files/themes/fcht/logo.svg').classes("w-12")
+        # create tabs
+        self.input_tab = InputTab(processor, theme=theme, tab_number=1, propagate=self.propagate_changes, debug=self.debug)
+        self.tables_tab = TableTab(processor, theme=theme, tab_number=2, propagate=self.propagate_changes, debug=self.debug)
+        self.processing_tab = ProcessingTab(processor, executor, theme=theme, tab_number=3, propagate=self.propagate_changes, debug=self.debug)
+        self.graphs_tab = GraphTab(processor, executor, theme=theme, tab_number=4, propagate=self.propagate_changes, debug=self.debug)
 
-        # with ui.header().props('bordered') as header:
-        #     header.classes('bg-page')
-        #     header.style('background-color: var(--q-color-page);')
-        #     # with ui.row().classes('w-full'):
-        #     #     ui.label('Kinetika')
-        #     with ui.row().classes('justify-center w-full'):
-        #         with ui.page_sticky(position='top-left', x_offset=10, y_offset=10):
-        #             ui.image('https://fcht.upce.cz/sites/default/files/themes/fcht/logo.svg').classes("w-12")
-        #         self.create_tabs()
+        # build user interface
+        self.build_ui(processor, theme)
 
+        self.enable_propagation()
+        # fill with test data, if possible (after some loading time)
+        # ui.timer(0.1, self.input_tab.load_default_df, once=True)
+
+    def build_ui(self, processor, theme):
+        self.create_header()
+        self.create_panels()
+        self.update_page_title(self.tab_value)
+
+    def enable_propagation(self):
+        self._propagate_enabled = True
+
+    def disable_propagation(self):
+        self._propagate_enabled = False
+
+    def propagate_changes(self, from_tab: int):
+        if not self._propagate_enabled:
+            return
+        if self.debug:
+            print(f'Propagating changes: from_tab={from_tab}')
+        if from_tab == 1:
+            self.tables_tab.show.refresh()
+            self.processing_tab.show.refresh()
+        elif from_tab == 2:
+            self.processing_tab.show.refresh()
+        elif from_tab == 3:
+            self.graphs_tab.show.refresh()
+
+    def create_header(self):
         with ui.header().style("background-color: #585858d0;"):
             with ui.row().classes('items-center justify-between w-full no-wrap'):
                 # LEFT SECTION
@@ -100,9 +121,6 @@ class Kinetika():
                             .props('flat fab-mini color=white'
                                    ).bind_visibility_from(self.dark_mode, 'value', lambda mode: mode is None)
 
-        self.create_panels()
-        self.update_page_title(self.tab_value)
-
     def update_dark_mode(self, value=None, button=None, toggle=False):
         if isinstance(toggle, bool) and toggle:
             self.dark_mode.toggle()
@@ -120,41 +138,38 @@ class Kinetika():
         with ui.row().classes('justify-center w-full'):
             ui.label(f'{c_tab["icon"]} {c_tab["label"]}').classes('text-4xl font-bold')
 
-
     def create_panels(self):
-        with ui.tab_panels(self.tabs, value=self.tab_value, on_change=lambda e: typeset_latex()).classes('w-full justify-center'):
+        with ui.tab_panels(self.tabs, value=self.tab_value, on_change=lambda e: typeset_latex()).classes(
+                'w-full justify-center'):
             with ui.tab_panel('input') as t:
                 self.set_label(t)
-                self.input_tab()
+                self.input_tab.show()
 
             with ui.tab_panel('data') as t:
                 self.set_label(t)
-                self.tables_tab()
+                self.tables_tab.show()
 
             with ui.tab_panel('speeds') as t:
                 self.set_label(t)
-                self.processing_tab()
+                self.processing_tab.show()
 
             with ui.tab_panel('graphs') as t:
                 self.set_label(t)
-                self.graphs_tab()
+                self.graphs_tab.show()
 
     def update_page_title(self, value):
-        ui.page_title(f"{self.main_page_title} | { self.tabs_meta[value]['label']}")
+        ui.page_title(f"{self.main_page_title} | {self.tabs_meta[value]['label']}")
 
 
-# @ui.page('/')
-# async def page():
-
-def run_nicegui_app():
+def run_nicegui_app(args):
     # page()
     config = Config()
     theme = load_style()
 
-    Kinetika(theme, config)
+    Kinetika(theme, config, args)
 
     ui.run(title=main_page_title, favicon="📊", **asdict(config.gui),
-           reload=False, port=8082, show=True)
+           reload=False, port=args.port, show=not args.debug)
 
 
 if __name__ in {"__main__", "__mp_main__"}:
@@ -162,6 +177,8 @@ if __name__ in {"__main__", "__mp_main__"}:
 
     parser = argparse.ArgumentParser(description="Aplikace pro počítání kinetiky")
     parser.add_argument('--debug_cli', metavar='EXCEL_FILE', help='Run in CLI mode using the specified Excel file')
+    parser.add_argument('--debug', action='store_true', help='Run in debug mode')
+    parser.add_argument('--port', type=int, default=8082, help='Port of the server')
     args = parser.parse_args()
 
     # fire-and-forget update check (won't block startup)
@@ -177,4 +194,4 @@ if __name__ in {"__main__", "__mp_main__"}:
     else:
         ##from test_nicegui import run_nicegui_app
 
-        run_nicegui_app()
+        run_nicegui_app(args)

@@ -29,9 +29,10 @@ class ProcessingTab(AbstractTab):
         self.executor = executor
         self.params_gui = {'expansion': True}
         self.params = ProcessingConfig()
+        self.spinner = None
 
     @ui.refreshable
-    def __call__(self, *args, **kwargs):
+    def show(self, *args, **kwargs):
         with ui.column().classes('justify-center w-full'):
             if not self.processor.has_data():
                 with ui.row().classes('justify-center w-full'):
@@ -45,12 +46,26 @@ class ProcessingTab(AbstractTab):
         self.display_processing_options()
         self.display_processing()
 
+    async def handle_recompute_button_click(self, e: events.ClickEventArguments):
+        e.sender.disable()
+        self.spinner.visible = True
+        result = await asyncio.get_event_loop().run_in_executor(
+            self.executor,
+            self.compute_all_kinetics,
+            asdict(self.params)
+        )
+        ui.notify("DONE")
+        self.display_processing.refresh()
+        e.sender.enable()
+        self.spinner.visible = False
+        self.propagate_changes(text='Propagation from processing button click')
+
     def recompute_button(self):
         # TODO: disable button
         # with disable(button):
         button = ui.button('Spočítat/přepočítat',
                               icon='🔁',
-                           on_click=lambda e: self.display_processing.refresh())
+                           on_click=self.handle_recompute_button_click)
         button.props('unelevated color=primary')
         # button.style('font-size: 1.2rem; padding: 0.6rem 1.2rem; min-width: 160px;')
 
@@ -116,17 +131,9 @@ class ProcessingTab(AbstractTab):
         self.processor.compute_all_kinetics(**params_dict)
 
     @ui.refreshable
-    async def display_processing(self):
-        spinner = ui.spinner(size='lg', color='primary')
-        spinner.visible = True
-        # Pass parameters to compute using run_in_executor
-        result = await asyncio.get_event_loop().run_in_executor(
-            self.executor,
-            self.compute_all_kinetics,
-            asdict(self.params)
-        )
-        ui.notify("DONE")
-        spinner.visible = False
+    def display_processing(self):
+        self.spinner = ui.spinner(size='lg', color='primary')
+        self.spinner.visible = False
 
         with ui.column().classes('justify-center w-full'):
             if hasattr(self.processor, "k_models"):

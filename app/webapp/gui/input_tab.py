@@ -1,8 +1,11 @@
 from dataclasses import asdict
 
-from nicegui import events, ui
+from nicegui import events, ui, core
 from typing import List
 import os
+from pathlib import Path
+
+from watchfiles import awatch
 
 from app.webapp.config import TablePickConfigEPO, TablePickConfigFAME
 from app.webapp.gui.abstract_tab import AbstractTab
@@ -20,7 +23,9 @@ from app.webapp.gui.styled_elements.table import StickyTable
 # from nicegui_tabulator import tabulator, use_theme
 # use the theme for all clients
 # use_theme('bootstrap4')
+from rich.console import Console
 
+console = Console()
 
 class InputTab(AbstractTab):
     def __init__(self, processor: TableProcessor, *args, **kwargs):
@@ -42,8 +47,10 @@ class InputTab(AbstractTab):
             'epo_df': None,
         }
 
+        self._buttons_enabled = True
+
     @ui.refreshable
-    def __call__(self, *args, **kwargs):
+    def show(self, *args, **kwargs):
         with ui.column().classes('justify-center w-full'):
             with ui.row().classes('justify-center w-full'):
                 ui.label('Krok 1: Nahrajte Excel soubor (.xlsx)').classes('text-lg font-semibold')
@@ -53,17 +60,21 @@ class InputTab(AbstractTab):
             self.display_load_subtables_buttons()
             self.place_fame_epo_tables()
 
-
     def get_table_data(self):
         return self.table_data
 
-    def handle_upload(self, e, path: str = None):
+    async def handle_upload(self, e, path: str = None):
         if path is None:
-            self.table_data['raw_content'] = BytesIO(e.content.read())  # binary buffer
+            data = await e.file.read()
+            self.table_data['raw_content'] = BytesIO(data)  # binary buffer
         else:
             self.table_data['raw_content'] = path
         self.table_data['raw_xls'] = pd.ExcelFile(self.table_data['raw_content'])
-        self.display_sheet_picker.refresh()
+
+        if core.loop is None:
+            self.display_sheet_picker()
+        else:
+            await self.display_sheet_picker.refresh()
 
 
     @ui.refreshable
@@ -76,16 +87,8 @@ class InputTab(AbstractTab):
                 on_upload=self.handle_upload,
                 multiple=False,
 
-            ).props('accept=.xlsx,.xls').tooltip('bobika')
-            try:
-                default_file_path = "/home/neoramic/repos/tynka_bakalarka_grafy/BP/kinetika/data/MERO_FAME+Epoxides_0-24h_60C.xlsx"
-                self.handle_upload(None, default_file_path)
-            except:
-                try:
-                    default_file_path = "C:/Users/micha/PycharmProjects/BP_with_kinetika/kinetika/data/MERO_FAME+Epoxides_0-24h_60C.xlsx"
-                    self.handle_upload(None, default_file_path)
-                except:
-                    pass
+            ).props('accept=.xlsx,.xls').tooltip('Nahrajte Excel soubor s naměřenými daty')
+
 
     @ui.refreshable
     def display_sheet_picker(self):
@@ -103,52 +106,72 @@ class InputTab(AbstractTab):
                                   ).classes('w-40')
                 self.handle_read_excel(sheet)
 
-
     def handle_read_excel(self, e):
-        self.table_data['raw_df'] = pd.read_excel(self.table_data['raw_xls'], sheet_name=e.value, header=None)
-        self.print_raw_file_table.refresh()
+        sheet_name = e.value
+        self.table_data['raw_df'] = pd.read_excel(self.table_data['raw_xls'], sheet_name=sheet_name, header=None)
+        if core.loop is None:
+            # direct render, no async magic
+            self.print_raw_file_table(sheet_name)
+        else:
+            # after app is running, use refresh()
+            self.print_raw_file_table.refresh(sheet_name)
 
     @ui.refreshable
-    def print_raw_file_table(self):
+    def print_raw_file_table(self, sheet_name: str = None):
         if self.table_data['raw_df'] is not None:
             with ui.row().classes('justify-center w-full'):
                 StickyTable.from_pandas(self.table_data['raw_df'],
-                                        sticky='both', theme=self.theme, title='BOBIKA').classes('max-h-80 w-full')
-                self.display_load_subtables_buttons.refresh()
+                                        sticky='both', theme=self.theme, title=f'Kompletní sešit v listu {sheet_name}').classes('max-h-80 w-full')
+                if core.loop is None:
+                    # direct render, no async magic
+                    self.display_load_subtables_buttons()
+                else:
+                    # after app is running, use refresh()
+                    self.display_load_subtables_buttons.refresh()
+
+
+
+    async def on_fame_table_change(self, e):
+        if self._buttons_enabled:
+            await self.display_fame_table.refresh()
+            self.propagate_changes(text='on_fame_table_change')
+
+    async def on_epo_table_change(self, e):
+        if self._buttons_enabled:
+            await self.display_epo_table.refresh()
+            self.propagate_changes(text='on_epo_table_change')
 
     @ui.refreshable
     def display_load_subtables_buttons(self):
         if self.table_data['raw_df'] is not None:
             # Reactive values
-
+            self.disable_buttons()
             ui.number.default_classes('w-32')
             with ui.row().classes('w-full flex-wrap gap-4'):
                 with ui.column().classes('flex-1 min-w-[300px] items-center'):
                     ui.label('Krok 3: Selekce hodnot pro FAME').classes('text-lg font-semibold mx-16 text-center')
                     with ui.row().classes('gap-2'):
-                        ui.number(label='řádek začátek', on_change=lambda e: self.display_fame_table.refresh(),
+                        ui.number(label='řádek začátek', on_change=self.on_fame_table_change,
                                   min=1).bind_value(self.fame_table_defaults, "row_start")
-                        ui.number(label='řádek konec', on_change=lambda e: self.display_fame_table.refresh(),
+                        ui.number(label='řádek konec', on_change=self.on_fame_table_change,
                                   min=1).bind_value(self.fame_table_defaults, "row_end")
-                        ui.number(label='sloupec začátek', on_change=lambda e: self.display_fame_table.refresh(),
+                        ui.number(label='sloupec začátek', on_change=self.on_fame_table_change,
                                   min=1).bind_value(self.fame_table_defaults, "col_start")
-                        ui.number(label='sloupec konec', on_change=lambda e: self.display_fame_table.refresh(),
+                        ui.number(label='sloupec konec', on_change=self.on_fame_table_change,
                                   min=1).bind_value(self.fame_table_defaults, "col_end")
 
                 with ui.column().classes('flex-1 min-w-[300px] items-center'):
                     ui.label('Krok 4: Selekce hodnot pro EPO').classes('text-lg font-semibold mx-16 text-center')
                     with ui.row().classes('gap-2'):
-                        ui.number(label='řádek začátek', on_change=lambda e: self.display_epo_table.refresh(),
+                        ui.number(label='řádek začátek', on_change=self.on_epo_table_change,
                                   min=1).bind_value(self.epo_table_defaults, "row_start")
-                        ui.number(label='řádek konec', on_change=lambda e: self.display_epo_table.refresh(),
+                        ui.number(label='řádek konec', on_change=self.on_epo_table_change,
                                   min=1).bind_value(self.epo_table_defaults, "row_end")
-                        ui.number(label='sloupec začátek', on_change=lambda e: self.display_epo_table.refresh(),
+                        ui.number(label='sloupec začátek', on_change=self.on_epo_table_change,
                                   min=1).bind_value(self.epo_table_defaults, "col_start")
-                        ui.number(label='sloupec konec', on_change=lambda e: self.display_epo_table.refresh(),
+                        ui.number(label='sloupec konec', on_change=self.on_epo_table_change,
                                   min=1).bind_value(self.epo_table_defaults, "col_end")
-
-
-
+        self.enable_buttons()
 
     def place_fame_epo_tables(self):
         with ui.row().classes('w-full flex-wrap gap-4'):
@@ -172,7 +195,7 @@ class InputTab(AbstractTab):
                 self.processor.add_fame(fame_df=fame_df)
             else:
                 self.processor.add_fame(fame_df=None)
-            self.call_refreshable_elements()
+        self.propagate_changes(text='display_fame_table')
 
     @ui.refreshable
     def display_epo_table(self):
@@ -186,4 +209,27 @@ class InputTab(AbstractTab):
                 self.processor.add_epo(epo_df=epo_df)
             else:
                 self.processor.add_epo(epo_df=None)
-            self.call_refreshable_elements()
+        self.propagate_changes(text='display_epo_table')
+
+    def enable_buttons(self):
+        self._buttons_enabled = True
+
+    def disable_buttons(self):
+        self._buttons_enabled = False
+
+    async def load_default_df(self):
+        default_file_path = "/home/neoramic/repos/tynka_bakalarka_grafy/BP/kinetika/data/MERO_FAME+Epoxides_0-24h_60C.xlsx"
+        if Path(default_file_path).is_file():
+            console.print(f'[blue]File {default_file_path} exists')
+            await self.handle_upload(None, default_file_path)
+            console.print(f'[blue]File {default_file_path} loaded')
+        else:
+            console.print(f'[yellow]File {default_file_path} does not exists')
+            default_file_path = "C:/Users/micha/PycharmProjects/BP_with_kinetika/kinetika/data/MERO_FAME+Epoxides_0-24h_60C.xlsx"
+
+        if Path(default_file_path).is_file():
+            console.print(f'[blue]File {default_file_path} exists')
+            await self.handle_upload(None, default_file_path)
+            console.print(f'[blue]File {default_file_path} loaded')
+        else:
+            console.print(f'[yellow]File {default_file_path} does not exists')

@@ -90,12 +90,13 @@ class TablePickConfigEPO(TablePickConfig):
 
 
 @binding.bindable_dataclass
-class ProcessingConfig(ABC):
+class ProcessingConfig(ABCconfig):
     initialization: InitConditions = InitConditions.TIME_SHIFT
     t_shift: float = 6.0
     optim_time_shift: bool = False
     # models_to_compute: List[str] = field(default_factory=lambda: get_possible_models())
-    models_to_compute: List[str] = field(default_factory=lambda: ['C18:1_simplified'])
+    # models_to_compute: List[str] = field(default_factory=lambda: ['C18:1_simplified'])
+    models_to_compute: List[str] = field(default_factory=lambda: list())
 
 @binding.bindable_dataclass
 class SingleCurveConfig(ABCconfig):

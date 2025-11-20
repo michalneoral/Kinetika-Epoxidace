@@ -23,7 +23,6 @@ def update_plot_image(fig, image_element):
     image_element.set_source(img)
 
 
-
 async def export_all_figures_as_zip_old(plotters, configs, save_format='png'):
     # Use temp dir to hold image files and zip
     with tempfile.TemporaryDirectory() as tmpdir:

@@ -39,7 +39,7 @@ class GraphTab(AbstractTab):
         self.plot_enabled = False
 
     @ui.refreshable
-    def __call__(self, *args, **kwargs):
+    def show(self, *args, **kwargs):
         with ui.column().classes('justify-center w-full'):
             if not self.processor.has_data() or len(self.processor.k_models) == 0:
                 with ui.row().classes('justify-center w-full'):

@@ -21,7 +21,7 @@ class TableTab(AbstractTab):
         self.expanded = {'all': True}
 
     @ui.refreshable
-    def __call__(self, *args, **kwargs):
+    def show(self, *args, **kwargs):
         with ui.column().classes('justify-center w-full'):
             with ui.row().classes('justify-center w-full'):
                 if not self.processor.has_data():
@@ -30,9 +30,6 @@ class TableTab(AbstractTab):
                 ui.label('Tabulky').classes('text-lg font-semibold')
             self.processor.process()
             self.show_tables()
-
-    def refresh(self):
-        self.__call__.refresh()
 
     def show_tables(self):
         with ui.row().classes('justify-center w-full'):
