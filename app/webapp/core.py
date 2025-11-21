@@ -18,7 +18,20 @@ def validate_table(df, key_column, required_values):
     """Check that required values exist in the given column."""
     if key_column not in df.columns:
         return False, f"❌ Sloupec '{key_column}' nebyl nalezen."
-    missing = [v for v in required_values if v not in df[key_column].values]
+    # missing = [v for v in required_values if v not in df[key_column].values]
+
+    missing = []
+    for v in required_values:
+        if isinstance(v, list):
+            c_missing = []
+            for vt in v:
+                if vt not in df[key_column].values:
+                    c_missing.append(vt)
+            if len(c_missing) == len(v):
+                missing.append('/'.join(v))
+        else:
+            if v not in df[key_column].values:
+                missing.append(v)
     if missing:
         return False, f"⚠️ Chybějící hodnoty ve sloupci '{key_column}': {', '.join(missing)}"
     return True, f"✅ Tabulka obsahuje všechny požadované hodnoty."

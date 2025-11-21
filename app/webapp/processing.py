@@ -14,8 +14,11 @@ def get_possible_models():
 # Retry defining the TableProcessor now that pandas is imported
 class TableProcessor:
     def __init__(self, fame_df: pd.DataFrame = None, epo_df: pd.DataFrame = None):
-        self.fame_df = fame_df.copy() if fame_df is not None else None
-        self.epo_df = epo_df.copy() if epo_df is not None else None
+        self.fame_df = None
+        self.add_fame(fame_df)
+
+        self.epo_df = None
+        self.add_epo(epo_df)
 
         self.kinetic_results = {}
         self.k_models = {}
@@ -29,6 +32,9 @@ class TableProcessor:
 
     def add_fame(self, fame_df: pd.DataFrame = None):
         self.fame_df = fame_df.copy() if fame_df is not None else None
+        # rename alliasses
+        if self.fame_df is not None:
+            self.fame_df['FAME'] = self.fame_df['FAME'].replace({'C17:0': 'C17', 'C18:0': 'C18'})
 
     def add_epo(self, epo_df: pd.DataFrame = None):
         self.epo_df = epo_df.copy() if epo_df is not None else None

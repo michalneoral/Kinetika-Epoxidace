@@ -30,7 +30,7 @@ class StrEnum(Enum):
 
 
 # utils.py
-REQUIRED_FAME = ['C17', 'C18', 'C18:1 I', 'C18:1 II', 'C18:2', 'C18:3', 'C20:1']
+REQUIRED_FAME = [['C17','C17:0'], ['C18','C18:0'], 'C18:1 I', 'C18:1 II', 'C18:2', 'C18:3', 'C20:1', 'C22:1']
 REQUIRED_EPO = [
     'C18:1 EPO', 'C18:2 1-EPO I', 'C18:2 1-EPO II', 'C18:3 1-EPO I',
     'C18:3 1-EPO II', 'C18:3 1-EPO III', 'C20:1 1-EPO',
