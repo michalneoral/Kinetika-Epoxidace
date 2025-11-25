@@ -355,24 +355,28 @@ class GraphTab(AbstractTab):
                     add_text_text = ui.input(f'Přídavný popisek',
                                      on_change=lambda e, c_name=name: self.handle_change(e, c_name))
                     add_text_text.bind_value(c_curve_config, 'additional_text_text')
+                    add_text_text.bind_enabled_from(show_add_text, 'value')
                     all_controls.append(add_text_text)
 
                     add_text_x = ui.number('Pozice x', value=c_curve_config.additional_text_x,
                                           min=0.0, max=None, step=1,
                                           on_change=lambda e, c_name=name: self.handle_change(e, c_name))
                     add_text_x.bind_value(c_curve_config, 'additional_text_x')
+                    add_text_x.bind_enabled_from(show_add_text, 'value')
                     all_controls.append(add_text_x)
 
                     add_text_y = ui.number('Pozice y', value=c_curve_config.additional_text_y,
                                            min=0.0, max=None, step=0.025,
                                            on_change=lambda e, c_name=name: self.handle_change(e, c_name))
                     add_text_y.bind_value(c_curve_config, 'additional_text_y')
+                    add_text_y.bind_enabled_from(show_add_text, 'value')
                     all_controls.append(add_text_y)
 
                     add_text_click = ToggleButton(icon='add_location_alt',
                                                   config=c_curve_config,
                                                   on_click=self.handle_pick_location_button_click)
-                    self.all_buttons.append(add_text_click)
+                    add_text_click.bind_enabled_from(show_add_text, 'value')
+                    all_controls.append(add_text_click)
 
         # c_input.on('click', lambda: ui.notify('You clicked the button B.'))
         # c_input.on('focus', lambda: ui.notify('You focus the button B.'))
