@@ -10,3 +10,10 @@ def init_app() -> None:
     IMPORTANT: Do not create any UI here when using @ui.page.
     """
     Database(DB_PATH).ensure_schema()
+
+    # Pandas: avoid FutureWarning about silent downcasting on fillna/ffill/bfill
+    try:
+        import pandas as pd  # type: ignore
+        pd.set_option('future.no_silent_downcasting', True)
+    except Exception:
+        pass
