@@ -8,11 +8,16 @@ from experimental_web.ui.utils.colors import convert_color
 
 
 class AdvancedPlotter:
-    def __init__(self, name, model):
+    def __init__(self, name, model, *, t_max: float = 2000, time_points: int = 2000):
+        """Helper for consistent plotting/editing.
+
+        Parameters are intentionally passed through to the initial data extraction
+        so UI code can avoid simulating twice.
+        """
         self.name = name
         self.model = model
         self.data = {}
-        self.extract_data_from_model()
+        self.extract_data_from_model(t_max=t_max, time_points=time_points)
         self.axes_values = None
 
     def extract_data_from_model(self, t_max=2000, time_points=2000):
@@ -213,8 +218,9 @@ class AdvancedPlotter:
 
         v = self.axes_values
 
-        nx0, ny0 = v["nx0"] / 100, v["ny0"] / 100
-        nx1, ny1 = v["nx1"] / 100, v["ny1"] / 100
+        # Values are stored in normalized [0,1] coordinates.
+        nx0, ny0 = v["nx0"], v["ny0"]
+        nx1, ny1 = v["nx1"], v["ny1"]
         xmin, xmax = v["xlim"]
         ymin, ymax = v["ylim"]
 

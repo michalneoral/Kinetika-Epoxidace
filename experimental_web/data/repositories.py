@@ -761,3 +761,58 @@ class ExperimentProcessingResultsRepository:
             }
         out["models"] = models
         return out
+
+
+class ExperimentGraphSettingsRepository:
+    """Persist graph-tab settings per experiment and model.
+
+    The intent is that a user can tweak the appearance (legend, x/y limits, colors,
+    annotations, ...) and see the same settings after restart.
+    """
+
+    def __init__(self, db_path: Path) -> None:
+        self.db = Database(db_path)
+        self.db.ensure_schema()
+
+    def get(self, experiment_id: int, model_name: str) -> Optional[dict]:
+        with self.db.connect() as con:
+            row = con.execute(
+                """
+                SELECT id, experiment_id, model_name, config_json, updated_at
+                FROM experiment_graph_settings
+                WHERE experiment_id=? AND model_name=?
+                """,
+                (int(experiment_id), str(model_name)),
+            ).fetchone()
+        if not row:
+            return None
+        out = dict(row)
+        try:
+            out["config"] = _json.loads(out.get("config_json") or "{}")
+        except Exception:
+            out["config"] = {}
+        return out
+
+    def upsert(self, experiment_id: int, model_name: str, config: dict) -> None:
+        now = utc_now_iso()
+        cfg_json = _json.dumps(config or {}, ensure_ascii=False)
+        with self.db.connect() as con:
+            con.execute(
+                """
+                INSERT INTO experiment_graph_settings(experiment_id, model_name, config_json, updated_at)
+                VALUES(?, ?, ?, ?)
+                ON CONFLICT(experiment_id, model_name) DO UPDATE SET
+                    config_json=excluded.config_json,
+                    updated_at=excluded.updated_at
+                """,
+                (int(experiment_id), str(model_name), cfg_json, now),
+            )
+            con.commit()
+
+    def delete(self, experiment_id: int, model_name: str) -> None:
+        with self.db.connect() as con:
+            con.execute(
+                "DELETE FROM experiment_graph_settings WHERE experiment_id=? AND model_name=?",
+                (int(experiment_id), str(model_name)),
+            )
+            con.commit()

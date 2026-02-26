@@ -812,9 +812,29 @@ def render_processing_tab(experiment_id: int) -> None:
             else:
                 used_t_shift = float(params.t_shift)
 
+            # Persist also the data context used for this run (sheet + table picks),
+            # so graphs can be reliably regenerated even if the user changes UI later.
+            run_settings = dict(payload or {})
+            try:
+                from experimental_web.data.repositories import ExperimentFileRepository, TablePickRepository
+
+                ef2 = ExperimentFileRepository(DB_PATH).get_single_for_experiment(experiment_id)
+                if ef2 and ef2.selected_sheet:
+                    run_settings['sheet'] = str(ef2.selected_sheet)
+
+                pick_repo2 = TablePickRepository(DB_PATH)
+                fp = pick_repo2.get(experiment_id, 'fame')
+                ep = pick_repo2.get(experiment_id, 'epo')
+                if fp:
+                    run_settings['fame_pick'] = [fp['row_start'], fp['row_end'], fp['col_start'], fp['col_end']]
+                if ep:
+                    run_settings['epo_pick'] = [ep['row_start'], ep['row_end'], ep['col_start'], ep['col_end']]
+            except Exception:
+                pass
+
             run_id = results_repo.create_run(
                 experiment_id=experiment_id,
-                settings=payload,
+                settings=run_settings,
                 used_t_shift=used_t_shift,
                 auto_t_shift=float(auto_t_shift_value) if auto_t_shift_value is not None else None,
             )

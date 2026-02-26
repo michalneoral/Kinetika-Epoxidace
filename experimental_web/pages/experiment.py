@@ -37,4 +37,5 @@ def page_experiment() -> None:
                 render_processing_tab(st.current_experiment_id)
 
             with ui.tab_panel(tab_graphs):
-                ui.label("Sem dáme grafy.").classes("text-body1")
+                from experimental_web.ui.experiment.graphs_tab import render_graphs_tab
+                render_graphs_tab(st.current_experiment_id)

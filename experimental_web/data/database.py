@@ -296,6 +296,21 @@ def ensure_schema(db: Database) -> None:
             """
         )
 
+        # --- graph tab persistent settings per experiment/model ---
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS experiment_graph_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                experiment_id INTEGER NOT NULL,
+                model_name TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(experiment_id) REFERENCES experiments(id) ON DELETE CASCADE,
+                UNIQUE(experiment_id, model_name)
+            )
+            """
+        )
+
         # migrations for older DBs
         _add_column_if_missing(conn, "experiments", "folder", "TEXT DEFAULT ''")
         _add_column_if_missing(conn, "experiments", "description", "TEXT DEFAULT ''")
@@ -336,5 +351,9 @@ def ensure_schema(db: Database) -> None:
             _add_column_if_missing(conn, "experiment_processing_settings", "t_max_plot", "REAL DEFAULT 400.0")
             _add_column_if_missing(conn, "experiment_processing_settings", "last_auto_t_shift", "REAL")
             _add_column_if_missing(conn, "experiment_processing_settings", "updated_at", "TEXT DEFAULT CURRENT_TIMESTAMP")
+
+        # graph settings migrations (older DBs won't have the table)
+        if _table_exists(conn, "experiment_graph_settings"):
+            _add_column_if_missing(conn, "experiment_graph_settings", "updated_at", "TEXT DEFAULT CURRENT_TIMESTAMP")
 
         conn.commit()
