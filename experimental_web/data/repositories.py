@@ -587,3 +587,177 @@ class ExperimentComputationRepository:
         with self.db.connect() as con:
             con.execute("DELETE FROM experiment_computations WHERE id=?", (cid,))
             con.commit()
+
+
+# -------------------------
+# Processing tab persistence (settings + last results)
+# -------------------------
+
+
+class ExperimentProcessingSettingsRepository:
+    """Persist processing-tab settings per experiment.
+
+    This stores *UI state* (init method, model selection, t_shift, ...), so that when the
+    app restarts the tab comes up exactly as the user left it.
+    """
+
+    def __init__(self, db_path: Path) -> None:
+        self.db = Database(db_path)
+        self.db.ensure_schema()
+
+    def get(self, experiment_id: int) -> Optional[dict]:
+        with self.db.connect() as con:
+            row = con.execute(
+                """
+                SELECT experiment_id, initialization, t_shift, optim_time_shift,
+                       models_to_compute_json, t_max, t_max_plot, last_auto_t_shift, updated_at
+                FROM experiment_processing_settings
+                WHERE experiment_id=?
+                """,
+                (experiment_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def upsert(
+        self,
+        *,
+        experiment_id: int,
+        initialization: str,
+        t_shift: float,
+        optim_time_shift: bool,
+        models_to_compute: list[str],
+        t_max: float,
+        t_max_plot: float,
+        last_auto_t_shift: float | None = None,
+    ) -> None:
+        now = utc_now_iso()
+        models_json = _json.dumps(list(models_to_compute or []), ensure_ascii=False)
+
+        # Keep last_auto_t_shift unless explicitly provided.
+        with self.db.connect() as con:
+            con.execute(
+                """
+                INSERT INTO experiment_processing_settings(
+                    experiment_id, initialization, t_shift, optim_time_shift, models_to_compute_json, t_max, t_max_plot, last_auto_t_shift, updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(experiment_id) DO UPDATE SET
+                    initialization=excluded.initialization,
+                    t_shift=excluded.t_shift,
+                    optim_time_shift=excluded.optim_time_shift,
+                    models_to_compute_json=excluded.models_to_compute_json,
+                    t_max=excluded.t_max,
+                    t_max_plot=excluded.t_max_plot,
+                    last_auto_t_shift=COALESCE(excluded.last_auto_t_shift, experiment_processing_settings.last_auto_t_shift),
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    int(experiment_id),
+                    str(initialization),
+                    float(t_shift),
+                    1 if bool(optim_time_shift) else 0,
+                    models_json,
+                    float(t_max),
+                    float(t_max_plot),
+                    (float(last_auto_t_shift) if last_auto_t_shift is not None else None),
+                    now,
+                ),
+            )
+            con.commit()
+
+
+class ExperimentProcessingResultsRepository:
+    """Persist last processing results (constants + plot images) grouped by run."""
+
+    def __init__(self, db_path: Path) -> None:
+        self.db = Database(db_path)
+        self.db.ensure_schema()
+
+    def create_run(
+        self,
+        *,
+        experiment_id: int,
+        settings: dict,
+        used_t_shift: float | None,
+        auto_t_shift: float | None,
+    ) -> int:
+        now = utc_now_iso()
+        settings_json = _json.dumps(settings or {}, ensure_ascii=False)
+        with self.db.connect() as con:
+            cur = con.execute(
+                """
+                INSERT INTO experiment_processing_runs(experiment_id, settings_json, used_t_shift, auto_t_shift, created_at)
+                VALUES(?, ?, ?, ?, ?)
+                """,
+                (int(experiment_id), settings_json, used_t_shift, auto_t_shift, now),
+            )
+            con.commit()
+            return int(cur.lastrowid)
+
+    def add_model_result(
+        self,
+        *,
+        run_id: int,
+        model_name: str,
+        constants: list[dict],
+        plot_png: bytes | None,
+        plot_error: str | None,
+    ) -> None:
+        constants_json = _json.dumps(list(constants or []), ensure_ascii=False)
+        with self.db.connect() as con:
+            con.execute(
+                """
+                INSERT INTO experiment_processing_run_models(run_id, model_name, constants_json, plot_png, plot_error)
+                VALUES(?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, model_name) DO UPDATE SET
+                    constants_json=excluded.constants_json,
+                    plot_png=excluded.plot_png,
+                    plot_error=excluded.plot_error
+                """,
+                (int(run_id), str(model_name), constants_json, sqlite3.Binary(plot_png) if plot_png else None, plot_error),
+            )
+            con.commit()
+
+    def get_latest_run(self, experiment_id: int) -> Optional[dict]:
+        with self.db.connect() as con:
+            run = con.execute(
+                """
+                SELECT id, experiment_id, settings_json, used_t_shift, auto_t_shift, created_at
+                FROM experiment_processing_runs
+                WHERE experiment_id=?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (int(experiment_id),),
+            ).fetchone()
+            if not run:
+                return None
+            rows = con.execute(
+                """
+                SELECT model_name, constants_json, plot_png, plot_error
+                FROM experiment_processing_run_models
+                WHERE run_id=?
+                ORDER BY model_name
+                """,
+                (int(run["id"]),),
+            ).fetchall()
+
+        out = dict(run)
+        try:
+            out["settings"] = _json.loads(out.get("settings_json") or "{}")
+        except Exception:
+            out["settings"] = {}
+        models: dict[str, dict] = {}
+        for r in rows:
+            try:
+                consts = _json.loads(r["constants_json"] or "[]")
+            except Exception:
+                consts = []
+            png_b = r["plot_png"]
+            models[str(r["model_name"])] = {
+                "constants": consts,
+                "plot_png": bytes(png_b) if png_b is not None else None,
+                "plot_error": r["plot_error"],
+            }
+        out["models"] = models
+        return out

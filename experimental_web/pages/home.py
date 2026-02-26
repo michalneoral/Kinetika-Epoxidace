@@ -6,6 +6,11 @@ from experimental_web.ui.layout import frame
 from experimental_web.core.paths import APP_DIR, DB_PATH
 from experimental_web.core.state import get_state
 from experimental_web.data.repositories import ExperimentRepository, MetaRepository
+from experimental_web.logging_setup import get_logger
+from experimental_web.ui.instrumentation import wrap_ui_handler
+
+
+log = get_logger(__name__)
 
 
 @ui.page("/")
@@ -14,6 +19,7 @@ def page_home() -> None:
     meta_repo = MetaRepository(DB_PATH)
 
     def open_experiment(exp_id: int) -> None:
+        log.info('[UI] home.open_experiment: id=%s', exp_id)
         exp = exp_repo.get(exp_id)
         if not exp:
             ui.notify("Experiment nenalezen", type="negative")
@@ -29,6 +35,7 @@ def page_home() -> None:
         ui.navigate.to("/experiment")
 
     def new_experiment_dialog() -> None:
+        log.info('[UI] home.new_experiment_dialog.open')
         dialog = ui.dialog()
         with dialog, ui.card():
             ui.label("Nový experiment").classes("text-h6")
@@ -36,6 +43,7 @@ def page_home() -> None:
 
             def do_create() -> None:
                 name = (name_input.value or "").strip()
+                log.info('[UI] home.create_experiment: name=%s', name)
                 if not name:
                     ui.notify("Zadej název experimentu", type="warning")
                     return
@@ -60,6 +68,7 @@ def page_home() -> None:
         dialog.open()
 
     def open_last() -> None:
+        log.info('[UI] home.open_last')
         last_id = meta_repo.get_last_experiment_id()
         if not last_id:
             ui.notify("Žádný poslední experiment není uložen", type="warning")
@@ -67,6 +76,7 @@ def page_home() -> None:
         open_experiment(last_id)
 
     def import_placeholder() -> None:
+        log.info('[UI] home.import_placeholder')
         dialog = ui.dialog()
         with dialog, ui.card():
             ui.label("Import experimentu").classes("text-h6")
@@ -140,9 +150,18 @@ def page_home() -> None:
                 with ui.row().classes("w-full items-center no-wrap"):
                     # tlačítka vlevo v button group
                     with ui.button_group().props("unelevated"):
-                        ui.button("Otevřít", on_click=lambda exp_id=exp.id: open_experiment(exp_id)).props("color=primary")
-                        ui.button("Duplikovat", on_click=lambda: duplicate_dialog(exp.id, exp.name)).props("color=secondary")
-                        ui.button("Smazat", on_click=lambda: delete_dialog(exp.id, exp.name)).props("color=negative")
+                        ui.button(
+                            "Otevřít",
+                            on_click=wrap_ui_handler('home.open.click', lambda exp_id=exp.id: open_experiment(exp_id), data=lambda: {'id': exp.id, 'name': exp.name}),
+                        ).props("color=primary")
+                        ui.button(
+                            "Duplikovat",
+                            on_click=wrap_ui_handler('home.duplicate.click', lambda: duplicate_dialog(exp.id, exp.name), data=lambda: {'id': exp.id, 'name': exp.name}),
+                        ).props("color=secondary")
+                        ui.button(
+                            "Smazat",
+                            on_click=wrap_ui_handler('home.delete.click', lambda: delete_dialog(exp.id, exp.name), data=lambda: {'id': exp.id, 'name': exp.name}),
+                        ).props("color=negative")
 
                     with ui.column().classes("q-ml-md gap-0"):
                         ui.label(f"#{exp.id} – {exp.name}").classes("text-subtitle1")
@@ -170,9 +189,9 @@ def page_home() -> None:
         ui.label(f"Databáze: {DB_PATH}").classes("text-caption")
 
         with ui.row().classes("q-gutter-md"):
-            ui.button("Nový experiment", on_click=new_experiment_dialog).props("unelevated")
-            ui.button("Otevřít poslední experiment", on_click=open_last).props("unelevated")
-            ui.button("Importovat experiment", on_click=import_placeholder).props("unelevated")
+            ui.button("Nový experiment", on_click=wrap_ui_handler('home.new_experiment.click', new_experiment_dialog)).props("unelevated")
+            ui.button("Otevřít poslední experiment", on_click=wrap_ui_handler('home.open_last.click', open_last)).props("unelevated")
+            ui.button("Importovat experiment", on_click=wrap_ui_handler('home.import.click', import_placeholder)).props("unelevated")
 
         ui.separator()
 

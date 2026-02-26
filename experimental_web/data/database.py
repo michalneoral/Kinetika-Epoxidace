@@ -248,6 +248,54 @@ def ensure_schema(db: Database) -> None:
             """
         )
 
+        # --- processing tab persistent settings per experiment ---
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS experiment_processing_settings (
+                experiment_id INTEGER PRIMARY KEY,
+                initialization TEXT DEFAULT 'TIME_SHIFT',
+                t_shift REAL DEFAULT 6.0,
+                optim_time_shift INTEGER DEFAULT 0,
+                models_to_compute_json TEXT DEFAULT '[]',
+                t_max REAL DEFAULT 400.0,
+                t_max_plot REAL DEFAULT 400.0,
+                last_auto_t_shift REAL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
+            )
+            """
+        )
+
+        # --- processing results (grouped by run) ---
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS experiment_processing_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                experiment_id INTEGER NOT NULL,
+                settings_json TEXT NOT NULL,
+                used_t_shift REAL,
+                auto_t_shift REAL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS experiment_processing_run_models (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                model_name TEXT NOT NULL,
+                constants_json TEXT NOT NULL,
+                plot_png BLOB,
+                plot_error TEXT,
+                FOREIGN KEY(run_id) REFERENCES experiment_processing_runs(id) ON DELETE CASCADE,
+                UNIQUE(run_id, model_name)
+            )
+            """
+        )
+
         # migrations for older DBs
         _add_column_if_missing(conn, "experiments", "folder", "TEXT DEFAULT ''")
         _add_column_if_missing(conn, "experiments", "description", "TEXT DEFAULT ''")
@@ -277,5 +325,16 @@ def ensure_schema(db: Database) -> None:
         _add_column_if_missing(conn, "experiment_computations", "param_names_json", "TEXT DEFAULT '[]'")
         _add_column_if_missing(conn, "experiment_computations", "created_at", "TEXT DEFAULT CURRENT_TIMESTAMP")
         _add_column_if_missing(conn, "experiment_computations", "updated_at", "TEXT DEFAULT CURRENT_TIMESTAMP")
+
+        # processing settings migrations (older DBs won't have the table)
+        if _table_exists(conn, "experiment_processing_settings"):
+            _add_column_if_missing(conn, "experiment_processing_settings", "initialization", "TEXT DEFAULT 'TIME_SHIFT'")
+            _add_column_if_missing(conn, "experiment_processing_settings", "t_shift", "REAL DEFAULT 6.0")
+            _add_column_if_missing(conn, "experiment_processing_settings", "optim_time_shift", "INTEGER DEFAULT 0")
+            _add_column_if_missing(conn, "experiment_processing_settings", "models_to_compute_json", "TEXT DEFAULT '[]'")
+            _add_column_if_missing(conn, "experiment_processing_settings", "t_max", "REAL DEFAULT 400.0")
+            _add_column_if_missing(conn, "experiment_processing_settings", "t_max_plot", "REAL DEFAULT 400.0")
+            _add_column_if_missing(conn, "experiment_processing_settings", "last_auto_t_shift", "REAL")
+            _add_column_if_missing(conn, "experiment_processing_settings", "updated_at", "TEXT DEFAULT CURRENT_TIMESTAMP")
 
         conn.commit()

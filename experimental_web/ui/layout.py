@@ -8,6 +8,11 @@ from nicegui import ui, app
 from experimental_web.core.paths import APP_DIR, DB_PATH
 from experimental_web.core.state import get_state
 from experimental_web.data.repositories import SettingsRepository
+from experimental_web.logging_setup import get_logger, is_debug_enabled
+from experimental_web.ui.debug_panel import create_debug_log_dialog
+
+
+log = get_logger(__name__)
 
 
 THEME_KEY = "theme_mode"          # 'auto' | 'light' | 'dark' (stored in app.storage.user + DB)
@@ -65,6 +70,9 @@ def _ensure_dark_binding(dark) -> None:
 
 def _set_dark_value(dark, value: Optional[bool]) -> None:
     """Set dark mode controller and persist mode to DB + storage."""
+    if log.isEnabledFor(10):
+        # 10 = DEBUG
+        log.debug('[UI] theme: set dark_value=%s', value)
     dark.set_value(value)
     mode = _dark_value_to_mode(value)
     _persist_theme_mode(mode)
@@ -73,6 +81,7 @@ def _set_dark_value(dark, value: Optional[bool]) -> None:
 
 def _close_experiment() -> None:
     st = get_state()
+    log.info('[UI] close_experiment: id=%s name=%s', st.current_experiment_id, st.current_experiment_name)
     st.current_experiment_id = None
     st.current_experiment_name = ""
     st.current_excel_file_id = None
@@ -91,6 +100,8 @@ def frame(title: str):
 
 
 
+    debug_dialog = create_debug_log_dialog()
+
     with ui.header().classes("items-center bg-primary text-white"):
         st = get_state()
         ui.label().bind_text_from(
@@ -100,7 +111,7 @@ def frame(title: str):
         ).classes('text-h6 text-white')
         ui.space()
 
-        ui.button("Domů", on_click=lambda: ui.navigate.to("/")).props("flat text-color=white")
+        ui.button("Domů", on_click=lambda: (log.info('[UI] nav: home'), ui.navigate.to("/"))).props("flat text-color=white")
 
         if get_state().current_experiment_id is not None:
             ui.button("Zavřít experiment", on_click=_close_experiment).props("flat text-color=white")
@@ -108,11 +119,18 @@ def frame(title: str):
         ui.button(
             "Aktuální experiment",
             on_click=lambda: (
+                log.info('[UI] nav: experiment'),
                 ui.navigate.to("/experiment")
                 if get_state().current_experiment_id is not None
                 else ui.notify("Žádný experiment není otevřen", type="warning")
             ),
         ).props("flat text-color=white")
+
+        # Debug log button (only in debug mode)
+        if debug_dialog is not None and is_debug_enabled():
+            ui.button(icon='bug_report', on_click=lambda: (log.debug('[UI] open debug dialog'), debug_dialog.open()))\
+                .props('flat fab-mini color=white')\
+                .tooltip('Debug log')
 
         # --- Theme controls (instant, no reload) ---
         with ui.element().tooltip("Přepnout režim: dark → auto → light (okamžitě)"):
