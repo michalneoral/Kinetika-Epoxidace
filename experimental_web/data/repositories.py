@@ -454,6 +454,8 @@ class ExperimentComputation:
     ode_text: str | None = None
     state_names: _List[str] | None = None
     param_names: _List[str] | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class ExperimentComputationRepository:
@@ -531,6 +533,9 @@ class ExperimentComputationRepository:
                     ode_text=r["ode_text"],
                     state_names=state_names,
                     param_names=param_names,
+                    # sqlite3.Row behaves like a mapping but doesn't implement .get
+                    created_at=r["created_at"],
+                    updated_at=r["updated_at"],
                 )
             )
         return out
@@ -630,15 +635,61 @@ class ExperimentProcessingSettingsRepository:
         t_max_plot: float,
         last_auto_t_shift: float | None = None,
     ) -> None:
-        now = utc_now_iso()
+        """Insert/update processing settings.
+
+        Important: bump updated_at only when *user-controlled* settings changed.
+        Updating `last_auto_t_shift` (a computed result) must not mark the settings as changed.
+        """
         models_json = _json.dumps(list(models_to_compute or []), ensure_ascii=False)
 
-        # Keep last_auto_t_shift unless explicitly provided.
+        # Check current row to avoid false "changed" markers.
         with self.db.connect() as con:
+            current = con.execute(
+                """
+                SELECT initialization, t_shift, optim_time_shift, models_to_compute_json,
+                       t_max, t_max_plot, last_auto_t_shift
+                FROM experiment_processing_settings
+                WHERE experiment_id=?
+                """,
+                (int(experiment_id),),
+            ).fetchone()
+
+            if current:
+                user_same = (
+                    str(current["initialization"]) == str(initialization)
+                    and float(current["t_shift"]) == float(t_shift)
+                    and int(current["optim_time_shift"]) == (1 if bool(optim_time_shift) else 0)
+                    and str(current["models_to_compute_json"] or "[]") == models_json
+                    and float(current["t_max"]) == float(t_max)
+                    and float(current["t_max_plot"]) == float(t_max_plot)
+                )
+
+                if user_same:
+                    # Only last_auto_t_shift changed -> update it without bumping updated_at.
+                    if last_auto_t_shift is not None:
+                        try:
+                            cur_last = current["last_auto_t_shift"]
+                            if cur_last is None or float(cur_last) != float(last_auto_t_shift):
+                                con.execute(
+                                    """
+                                    UPDATE experiment_processing_settings
+                                    SET last_auto_t_shift=?
+                                    WHERE experiment_id=?
+                                    """,
+                                    (float(last_auto_t_shift), int(experiment_id)),
+                                )
+                                con.commit()
+                        except Exception:
+                            pass
+                    return  # no user-facing change -> keep updated_at as-is
+
+            # No row yet, or user settings changed -> upsert and bump updated_at.
+            now = utc_now_iso()
             con.execute(
                 """
                 INSERT INTO experiment_processing_settings(
-                    experiment_id, initialization, t_shift, optim_time_shift, models_to_compute_json, t_max, t_max_plot, last_auto_t_shift, updated_at
+                    experiment_id, initialization, t_shift, optim_time_shift, models_to_compute_json,
+                    t_max, t_max_plot, last_auto_t_shift, updated_at
                 )
                 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(experiment_id) DO UPDATE SET
@@ -793,10 +844,66 @@ class ExperimentGraphSettingsRepository:
             out["config"] = {}
         return out
 
-    def upsert(self, experiment_id: int, model_name: str, config: dict) -> None:
-        now = utc_now_iso()
-        cfg_json = _json.dumps(config or {}, ensure_ascii=False)
+    def list_for_experiment(self, experiment_id: int) -> list[dict]:
+        """Return all graph settings rows for an experiment (as plain dicts)."""
+        # NOTE: The schema evolved over time. Some existing DBs don't have
+        # `created_at` in `experiment_graph_settings` (they only have `updated_at`).
+        # Be backwards-compatible by falling back gracefully.
         with self.db.connect() as con:
+            try:
+                rows = con.execute(
+                    """
+                    SELECT id, experiment_id, model_name, config_json, created_at, updated_at
+                    FROM experiment_graph_settings
+                    WHERE experiment_id=?
+                    ORDER BY id
+                    """,
+                    (int(experiment_id),),
+                ).fetchall()
+                has_created_at = True
+            except Exception:
+                rows = con.execute(
+                    """
+                    SELECT id, experiment_id, model_name, config_json, updated_at
+                    FROM experiment_graph_settings
+                    WHERE experiment_id=?
+                    ORDER BY id
+                    """,
+                    (int(experiment_id),),
+                ).fetchall()
+                has_created_at = False
+
+        out: list[dict] = []
+        for r in rows:
+            d = dict(r)
+            if not has_created_at:
+                # Approximation: treat `created_at` as the first known timestamp.
+                d["created_at"] = d.get("updated_at")
+            try:
+                d["config"] = _json.loads(d.get("config_json") or "{}")
+            except Exception:
+                d["config"] = {}
+            out.append(d)
+        return out
+
+    def upsert(self, experiment_id: int, model_name: str, config: dict) -> None:
+        """Insert/update graph settings, without bumping updated_at if unchanged."""
+        cfg_json = _json.dumps(config or {}, ensure_ascii=False)
+
+        with self.db.connect() as con:
+            existing = con.execute(
+                """
+                SELECT config_json
+                FROM experiment_graph_settings
+                WHERE experiment_id=? AND model_name=?
+                """,
+                (int(experiment_id), str(model_name)),
+            ).fetchone()
+
+            if existing and (existing["config_json"] or "") == cfg_json:
+                return  # no real change -> keep updated_at as-is
+
+            now = utc_now_iso()
             con.execute(
                 """
                 INSERT INTO experiment_graph_settings(experiment_id, model_name, config_json, updated_at)

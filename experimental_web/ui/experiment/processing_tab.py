@@ -25,6 +25,7 @@ from experimental_web.domain.kinetic_model import InitConditions
 from experimental_web.ui.widgets.styled_label import StyledLabel
 from experimental_web.logging_setup import get_logger, log_scope
 from experimental_web.ui.instrumentation import wrap_ui_handler
+from experimental_web.ui.utils.staleness import compute_staleness, is_model_stale
 
 
 log = get_logger(__name__)
@@ -307,6 +308,8 @@ def render_processing_tab(experiment_id: int) -> None:
         params_init = InitConditions.TIME_SHIFT
         models = []
 
+    had_saved_settings = bool(saved)
+
     params = ProcessingConfig()
     # apply loaded settings
     try:
@@ -335,6 +338,8 @@ def render_processing_tab(experiment_id: int) -> None:
     spinner.visible = False
 
     # --- persist settings with a light debounce (no spam writes) ---
+    # NOTE: We must not write immediately on page open. Otherwise updated_at changes even without user edits,
+    # and the UI will incorrectly show "Změněno".
     last_settings_snapshot: dict | None = None
 
     def _settings_snapshot() -> dict:
@@ -347,6 +352,9 @@ def render_processing_tab(experiment_id: int) -> None:
             't_max_plot': float(getattr(params, 't_max_plot', 400.0)),
             'last_auto_t_shift': float(auto_t_shift_value) if auto_t_shift_value is not None else None,
         }
+
+    # Initialize snapshot right after render to prevent an automatic upsert on first timer tick.
+    last_settings_snapshot = _settings_snapshot()
 
     def _persist_settings_if_changed() -> None:
         nonlocal last_settings_snapshot
@@ -852,6 +860,14 @@ def render_processing_tab(experiment_id: int) -> None:
         except Exception as e:
             log.debug('Failed to persist results: %s', e)
 
+        # Notify other tabs (especially "grafy") that new results are available.
+        # The experiment page builds all tab contents once; without an explicit refresh signal,
+        # the graphs tab would only update after reopening the experiment.
+        try:
+            st.graphs_version = st.graphs_version + 1
+        except Exception:
+            pass
+
         # Ensure all models are rendered (in case streaming didn't deliver everything)
         models = (result or {}).get('models') or {}
         for name, entry in models.items():
@@ -1006,37 +1022,53 @@ def render_processing_tab(experiment_id: int) -> None:
     from experimental_web.ui.experiment.computations_ui import computations_block
     computations_block(experiment_id, params=params)
 
-    ui.button(
-        "Spočítat / přepočítat",
-        icon="🔁",
-        on_click=wrap_ui_handler(
-            'processing.compute.click',
-            on_compute,
-            level=20,
-            data=lambda: {
-                'experiment_id': experiment_id,
-                'models_to_compute': list(params.models_to_compute),
-                'initialization': params.initialization.name,
-                'optim_time_shift': bool(params.optim_time_shift),
-                't_shift': float(params.t_shift),
-                't_max': float(getattr(params, 't_max', 400.0)),
-                't_max_plot': float(getattr(params, 't_max_plot', 400.0)),
-            },
-        ),
-    ).props("unelevated").classes("q-mt-md")
+    with ui.row().classes('items-center gap-2 q-mt-md'):
+        ui.button(
+            "Spočítat / přepočítat",
+            icon="🔁",
+            on_click=wrap_ui_handler(
+                'processing.compute.click',
+                on_compute,
+                level=20,
+                data=lambda: {
+                    'experiment_id': experiment_id,
+                    'models_to_compute': list(params.models_to_compute),
+                    'initialization': params.initialization.name,
+                    'optim_time_shift': bool(params.optim_time_shift),
+                    't_shift': float(params.t_shift),
+                    't_max': float(getattr(params, 't_max', 400.0)),
+                    't_max_plot': float(getattr(params, 't_max_plot', 400.0)),
+                },
+            ),
+        ).props("unelevated")
+
+        # Visible when settings/computation graph changed since last compute.
+        dirty_badge = ui.badge('Změněno – přepočítejte', color='orange').props('outline')
+        dirty_badge.visible = False
     ui.separator()
     results_container = ui.column().classes("w-full gap-4")
     results_container
 
+    # Per-model "changed" badges (results are stale compared to the latest settings/definitions)
+    stale_badges: dict[str, Any] = {}
+    last_seen_run_created_at: str | None = None
+
     # Initial render: load last stored results from DB (if any).
     def _render_saved_results_from_db() -> None:
-        nonlocal auto_t_shift_value
+        nonlocal auto_t_shift_value, last_seen_run_created_at
         try:
             saved_run = results_repo.get_latest_run(experiment_id)
         except Exception:
             saved_run = None
         if not saved_run:
             return
+
+        try:
+            _run, stale = compute_staleness(experiment_id)
+        except Exception:
+            _run, stale = (saved_run, None)
+
+        last_seen_run_created_at = str(saved_run.get('created_at') or '')
 
         # If we have an auto-t_shift from last run, show it (when auto mode is enabled).
         try:
@@ -1070,16 +1102,29 @@ def render_processing_tab(experiment_id: int) -> None:
         models_db: dict[str, dict] = dict(saved_run.get('models') or {})
 
         results_container.clear()
+        stale_badges.clear()
         with results_container:
             ui.label(f"Poslední výsledky: {saved_run.get('created_at')}").classes('text-caption text-grey-7')
             if saved_run.get('used_t_shift') is not None:
                 ui.label(f"Použitý t_shift: {float(saved_run.get('used_t_shift')):.6g}").classes('text-caption text-grey-7')
+            try:
+                if stale is not None and stale.global_changed:
+                    ui.badge('Změněno od posledního výpočtu', color='orange').props('outline')
+            except Exception:
+                pass
             ui.separator()
 
             rendered = set()
             for name in expected:
                 with ui.card().classes('w-full'):
-                    ui.markdown(f"#### Výsledky pro {name}")
+                    with ui.row().classes('w-full items-center justify-between'):
+                        ui.markdown(f"#### Výsledky pro {name}")
+                        b = ui.badge('Změněno', color='orange').props('outline')
+                        try:
+                            b.visible = bool(stale is not None and is_model_stale(name, stale))
+                        except Exception:
+                            b.visible = False
+                        stale_badges[name] = b
                     body = ui.column().classes('w-full')
                     model_bodies[name] = body
                     entry = models_db.get(name)
@@ -1099,7 +1144,14 @@ def render_processing_tab(experiment_id: int) -> None:
             for name in extras:
                 entry = models_db.get(name) or {}
                 with ui.card().classes('w-full'):
-                    ui.markdown(f"#### Výsledky pro {name}")
+                    with ui.row().classes('w-full items-center justify-between'):
+                        ui.markdown(f"#### Výsledky pro {name}")
+                        b = ui.badge('Změněno', color='orange').props('outline')
+                        try:
+                            b.visible = bool(stale is not None and is_model_stale(name, stale))
+                        except Exception:
+                            b.visible = False
+                        stale_badges[name] = b
                     body = ui.column().classes('w-full')
                     model_bodies[name] = body
                     _render_model_body(body, {
@@ -1110,6 +1162,42 @@ def render_processing_tab(experiment_id: int) -> None:
 
         status.set('Načteny poslední výsledky z databáze.', 'info')
 
+        # Update top badge
+        try:
+            if stale is not None:
+                dirty_badge.visible = bool(stale.global_changed or any(stale.custom_changed.values()))
+        except Exception:
+            pass
+
+
+    def _refresh_staleness_indicators() -> None:
+        """Refresh "changed" badges when user edits settings/computations."""
+        nonlocal last_seen_run_created_at
+        try:
+            run, stale = compute_staleness(experiment_id)
+        except Exception:
+            return
+
+        # If a new run appeared, rebuild to show latest timestamp and models.
+        created_at = str((run or {}).get('created_at') or '') if run else ''
+        if created_at and created_at != (last_seen_run_created_at or ''):
+            try:
+                _render_saved_results_from_db()
+            except Exception:
+                return
+
+        # Update badge visibility
+        try:
+            dirty_badge.visible = bool(stale.global_changed or any(stale.custom_changed.values()))
+        except Exception:
+            pass
+
+        for model_name, badge in list(stale_badges.items()):
+            try:
+                badge.visible = bool(is_model_stale(model_name, stale))
+            except Exception:
+                pass
+
     _render_saved_results_from_db()
 
     # Poll streamed results/progress from the subprocess.
@@ -1117,3 +1205,6 @@ def render_processing_tab(experiment_id: int) -> None:
 
     # Persist settings periodically (debounced by snapshot comparison).
     ui.timer(0.5, callback=_persist_settings_if_changed)
+
+    # Also poll for "stale" indicators so the user immediately sees changes.
+    ui.timer(1.0, callback=_refresh_staleness_indicators)

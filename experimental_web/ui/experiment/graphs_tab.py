@@ -26,10 +26,74 @@ from experimental_web.domain.ode_compiler import compile_ode_equations
 from experimental_web.domain.processing import TableProcessor
 from experimental_web.logging_setup import get_logger
 from experimental_web.ui.utils.plots import export_all_figures_as_zip, update_plot_image
+from experimental_web.ui.styled_elements.custom_color_picker import ColorPickerButton
 from experimental_web.ui.widgets.styled_label import StyledLabel
+from experimental_web.ui.utils.staleness import compute_staleness, is_model_stale
 
 
 log = get_logger(__name__)
+
+_GRAPHS_CSS_ADDED = False
+
+
+def _ensure_graphs_css() -> None:
+    """Install small CSS helpers used by the graphs tab.
+
+    - make the per-curve tab show a colored icon (without coloring the label)
+    - allow many tabs without causing the whole page to scroll horizontally
+    """
+    global _GRAPHS_CSS_ADDED
+    if _GRAPHS_CSS_ADDED:
+        return
+    _GRAPHS_CSS_ADDED = True
+    ui.add_css(
+        """
+        /* Colored marker for curve tabs (without coloring the label text) */
+        .curve-tab .q-tab__label {
+            display: inline-flex;
+            align-items: center;
+        }
+        .curve-tab .q-tab__label::before {
+            content: '';
+            width: 12px;
+            height: 12px;
+            background: var(--curve-color, #000);
+            border: 1px solid rgba(0,0,0,0.25);
+            border-radius: 2px;
+            display: inline-block;
+            margin-right: 6px;
+            box-sizing: border-box;
+            flex: 0 0 auto;
+        }
+
+        /* Keep the curve-tabs row inside its container.
+           Allow horizontal scroll ONLY inside this wrapper (not the whole page). */
+        .graphs-controls-tabs {
+            width: 100%;
+            max-width: 100%;
+            min-width: 0;
+            box-sizing: border-box;
+            overflow-x: auto;
+            overflow-y: hidden;
+        }
+        .graphs-controls-tabs .q-tabs {
+            display: inline-flex;
+            width: max-content !important;
+            min-width: 100%;
+        }
+        .graphs-controls-tabs .q-tabs__content { flex-wrap: nowrap; }
+        .graphs-controls-tabs::-webkit-scrollbar { height: 8px; }
+
+        /* Make long labels compact (ellipsis) so each tab doesn't become extremely wide. */
+        .graphs-controls-tabs .q-tab { max-width: 360px; }
+        .graphs-controls-tabs .q-tab__label {
+            max-width: 280px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        """
+    )
 
 
 def _short(v: Any, max_len: int = 200) -> str:
@@ -661,8 +725,12 @@ def _pick_best_custom_key_for_run(
     return candidates[0]
 
 
-def render_graphs_tab(experiment_id: int) -> None:
-    """Tab: grafy (pokročilé vykreslování pro všechny spočítané ODE modely)."""
+def _render_graphs_tab_body(experiment_id: int) -> None:
+    """Inner implementation for the graphs tab.
+
+    This is wrapped by a refreshable container to allow updating immediately
+    after a new computation run is saved.
+    """
 
     st = get_state()
     file_repo = ExperimentFileRepository(DB_PATH)
@@ -674,6 +742,12 @@ def render_graphs_tab(experiment_id: int) -> None:
     if not latest:
         StyledLabel('Nejdřív spusťte výpočet v záložce „rychlosti“.', 'warning')
         return
+
+    # Staleness: did the user change processing settings or computation graphs since the last run?
+    try:
+        _run2, stale = compute_staleness(experiment_id)
+    except Exception:
+        stale = None
 
     log.debug('graphs_tab: open experiment_id=%s latest_run_keys=%s', experiment_id, _list_short(list(latest.keys()), 50))
 
@@ -833,7 +907,22 @@ def render_graphs_tab(experiment_id: int) -> None:
         if model is None:
             continue
 
-        # Apply persisted constants if we have them.
+        # IMPORTANT: reinit_kinetic_model() resets k_fit -> we must apply constants *after* reinit.
+        # We always try to re-init the model using the exact t_shift that was used in the saved run.
+        # (For graph-defined models this is required to get the same shifted timeline.)
+        try:
+            model.reinit_kinetic_model(t_shift=used_t_shift_f)
+        except Exception as e:
+            log.debug(
+                'graphs_tab: model.reinit_kinetic_model failed for %s: %s (used_t_shift=%s init_method=%s)',
+                name,
+                e,
+                _short(used_t_shift_f, 40),
+                _short(getattr(model, 'init_method', None), 40),
+                exc_info=True,
+            )
+
+        # Apply persisted constants (k-values) from the last run.
         vals = _values_from_constants(consts)
         if vals:
             try:
@@ -841,10 +930,28 @@ def render_graphs_tab(experiment_id: int) -> None:
                 model.k_fit = np.array(vals, dtype=float)
             except Exception:
                 model.k_fit = vals
-        try:
-            model.reinit_kinetic_model(t_shift=used_t_shift_f)
-        except Exception:
-            pass
+            try:
+                log.trace(
+                    'graphs_tab: applied %d constants to %s (first=%s last=%s)',
+                    len(vals),
+                    name,
+                    _short(vals[0], 40),
+                    _short(vals[-1], 40),
+                )
+            except Exception:
+                pass
+        else:
+            # This should not happen for models saved from processing tab.
+            # If it does, show what we got from DB to make debugging straightforward.
+            try:
+                log.debug(
+                    'graphs_tab: WARNING no constants found for %s; constants payload keys=%s payload_sample=%s',
+                    name,
+                    _list_short(sorted({str(k) for d in consts for k in (d.keys() if isinstance(d, dict) else [])}), 40),
+                    _short(consts[:2], 200),
+                )
+            except Exception:
+                log.debug('graphs_tab: WARNING no constants found for %s', name)
         try:
             plotter = AdvancedPlotter(name, model, t_max=sim_t_max, time_points=2000)
             plotters[name] = plotter
@@ -862,7 +969,7 @@ def render_graphs_tab(experiment_id: int) -> None:
                     'graphs_tab: failed to create plotter for %s: %s (t_shift=%s t_max=%s sim_t_max=%s t_range=%s cols=%s)',
                     name,
                     e,
-                    _short(getattr(model, 't_shift', None), 40),
+                    _short(used_t_shift_f, 40),
                     _short(getattr(model, 't_max', None), 40),
                     sim_t_max,
                     _short(t_range, 80),
@@ -988,6 +1095,12 @@ def render_graphs_tab(experiment_id: int) -> None:
             ui.label('Grafy').classes('text-h6')
             ui.label(f"t_shift použité ve výpočtu: {used_t_shift_f:.6g}").classes('text-caption text-grey-7')
 
+        try:
+            if stale is not None and (stale.global_changed or any(stale.custom_changed.values())):
+                ui.badge('Změněno od posledního výpočtu – přepočítejte v záložce „rychlosti“', color='orange').props('outline')
+        except Exception:
+            pass
+
         if not ordered:
             StyledLabel('Nejsou žádné uložené výsledky pro vykreslení.', 'warning')
             return
@@ -1015,13 +1128,15 @@ def render_graphs_tab(experiment_id: int) -> None:
                 return
             axes = plotter.get_axes_values() or {}
             try:
-                w = float(axes.get('fig_w') or 0)
-                h = float(axes.get('fig_h') or 0)
-                if not (w > 0 and h > 0):
-                    return
-                rel_x = float(getattr(e, 'image_x', 0.0)) / w
-                rel_y = float(getattr(e, 'image_y', 0.0)) / h
-                x, y = plotter.rel_to_data(rel_x, rel_y)
+                ix = float(getattr(e, 'image_x', 0.0))
+                iy = float(getattr(e, 'image_y', 0.0))
+                # Use relative coords to be robust against CSS scaling of the image element.
+                iw = float(getattr(e, 'image_width', 0.0) or 0.0)
+                ih = float(getattr(e, 'image_height', 0.0) or 0.0)
+                if iw > 0 and ih > 0:
+                    x, y = plotter.rel_to_data(ix / iw, iy / ih)
+                else:
+                    x, y = plotter.image_to_data(ix, iy)
             except Exception:
                 return
 
@@ -1039,7 +1154,13 @@ def render_graphs_tab(experiment_id: int) -> None:
             cfg = configs[name]
 
             with ui.card().classes('w-full'):
-                ui.markdown(f"### {name}")
+                with ui.row().classes('w-full items-center justify-between'):
+                    ui.markdown(f"### {name}")
+                    try:
+                        b = ui.badge('Změněno', color='orange').props('outline')
+                        b.visible = bool(stale is not None and is_model_stale(name, stale))
+                    except Exception:
+                        pass
 
                 consts = list(entry.get('constants') or [])
                 if consts:
@@ -1061,14 +1182,14 @@ def render_graphs_tab(experiment_id: int) -> None:
                             img = ui.interactive_image(
                                 on_mouse=lambda e, n=name: _on_image_mouse(e, n),
                                 cross=False,
-                            ).classes('max-w-5xl')
+                            ).classes('w-full max-w-5xl [&>img]:w-full [&>svg]:w-full')
                             plot_images[name] = img
                         else:
                             png = entry.get('plot_png')
                             if png:
                                 import base64
                                 b64 = base64.b64encode(png).decode('ascii')
-                                ui.image(f"data:image/png;base64,{b64}").classes('max-w-5xl')
+                                ui.image(f"data:image/png;base64,{b64}").classes('w-full max-w-5xl [&>img]:w-full [&>svg]:w-full')
                             else:
                                 StyledLabel('Graf pro tento model není uložený.', 'warning')
 
@@ -1098,9 +1219,72 @@ def render_graphs_tab(experiment_id: int) -> None:
                     try:
                         fig = plotter.plot(ui=True, **cfg.to_kwargs())
                         update_plot_image(fig, plot_images[name])
-                        _schedule_save(name)
+                        # Do not persist on initial render; only on user changes
+                        
                     except Exception as e:
                         StyledLabel(f'Chyba při vykreslení: {e}', 'warning')
+
+
+def render_graphs_tab(experiment_id: int) -> None:
+    """Tab: grafy (pokročilé vykreslování pro všechny spočítané ODE modely).
+
+    The experiment page builds all tabs once; therefore we need an explicit refresh
+    mechanism so that a newly computed/updated run becomes visible immediately
+    without reopening the experiment.
+    """
+
+    _ensure_graphs_css()
+
+    st = get_state()
+    last_version = st.graphs_version
+    last_stale_token: str | None = None
+
+    @ui.refreshable
+    def _view() -> None:
+        _render_graphs_tab_body(experiment_id)
+
+    _view()
+
+    def _maybe_refresh() -> None:
+        nonlocal last_version
+        try:
+            current = get_state().graphs_version
+        except Exception:
+            current = last_version
+        if current != last_version:
+            last_version = current
+            try:
+                _view.refresh()
+            except Exception:
+                pass
+
+    # Polling is cheap here (it only checks an int). Re-rendering happens only
+    # when graphs_version changes (i.e., after a computation finishes).
+    ui.timer(0.8, _maybe_refresh)
+
+    def _maybe_refresh_staleness() -> None:
+        """Refresh graphs tab when settings/computation definitions change.
+
+        We keep this separate from graphs_version because changing settings should show
+        a 'changed' indicator immediately, even if no recompute happened yet.
+        """
+        nonlocal last_stale_token
+        try:
+            _run, info = compute_staleness(experiment_id)
+            token = f"{info.last_run_created_at}|{int(info.global_changed)}|{sum(1 for v in info.custom_changed.values() if v)}"
+        except Exception:
+            return
+        if last_stale_token is None:
+            last_stale_token = token
+            return
+        if token != last_stale_token:
+            last_stale_token = token
+            try:
+                _view.refresh()
+            except Exception:
+                pass
+
+    ui.timer(1.2, _maybe_refresh_staleness)
 
 
 def _handle_click_for_future(e: events.MouseEventArguments, name: str) -> None:
@@ -1122,103 +1306,155 @@ def _render_controls_for(
     `replot` must update the image *and* persist the configuration.
     """
 
-    with ui.row().classes('w-full flex-wrap gap-3 items-center'):
-        show_title = ui.switch('Nadpis', value=cfg.show_title,
-                               on_change=lambda e: (setattr(cfg, 'show_title', bool(e.value)), replot()))
-        title = ui.input('Text nadpisu', value=cfg.title,
-                         on_change=lambda e: (setattr(cfg, 'title', str(e.value)), replot())).classes('w-72')
-        title.bind_enabled_from(show_title, 'value')
+    # The controls can become very large. We therefore split them into tabs:
+    # - one "Graf" tab for global settings
+    # - one tab per curve (Křivka 1, Křivka 2, ...), including the original column name
 
-    with ui.row().classes('w-full flex-wrap gap-3 items-center'):
-        ui.select(
-            label='Legenda',
-            options=['both', 'single', 'components_only', 'None'],
-            value=cfg.legend_mode,
-            on_change=lambda e: (setattr(cfg, 'legend_mode', str(e.value)), replot()),
-        ).classes('w-64')
-        ui.number('Šířka (inch)', value=cfg.fig_width, min=1, max=20, step=0.5,
-                  on_change=lambda e: (setattr(cfg, 'fig_width', float(e.value)), replot())).classes('w-40')
-        ui.number('Výška (inch)', value=cfg.fig_height, min=1, max=20, step=0.5,
-                  on_change=lambda e: (setattr(cfg, 'fig_height', float(e.value)), replot())).classes('w-40')
+    colnames: list[str] = []
+    try:
+        colnames = list(plotter.data.get('column_names') or [])
+    except Exception:
+        colnames = []
 
-    with ui.row().classes('w-full flex-wrap gap-3 items-center'):
-        ui.input('Popisek osy X', value=cfg.xlabel,
-                 on_change=lambda e: (setattr(cfg, 'xlabel', str(e.value)), replot())).classes('w-56')
-        ui.input('Popisek osy Y', value=cfg.ylabel,
-                 on_change=lambda e: (setattr(cfg, 'ylabel', str(e.value)), replot())).classes('w-56')
+    # Prevent a large number of curve-tabs from causing horizontal scrolling of the whole page.
+    # The row should stay within the card width and scroll/arrow only inside itself.
+    curve_tabs: list[Any] = []
+    with ui.element('div').classes('w-full graphs-controls-tabs'):
+        # Don't force the q-tabs element itself to full width; the wrapper provides width and scrolling.
+        with ui.tabs().props('dense arrows outside-arrows mobile-arrows').classes('q-pa-none') as tabs:
+            # In NiceGUI the tab's *name* is the identifier used by ui.tab_panels.
+            # The `label` is what the user sees. We therefore use a stable name and a human label.
+            ui.tab(name='graph', label='Graf')
+            for idx, _cs in enumerate(cfg.curve_styles):
+                orig = colnames[idx] if idx < len(colnames) else ''
+                tab_title = f'Křivka {idx + 1}' + (f' - {orig}' if orig else '')
+                t = ui.tab(name=f'curve_{idx}', label=tab_title)
+                # Add a small colored marker (CSS ::before) for better orientation
+                try:
+                    t.classes('curve-tab')
+                    t.style(f'--curve-color: {cfg.curve_styles[idx].color};')
+                    t.tooltip(tab_title)
+                except Exception:
+                    pass
+                curve_tabs.append(t)
 
-    with ui.row().classes('w-full flex-wrap gap-3 items-center'):
-        ui.select(
-            label='Osa X',
-            options=['default', 'auto', 'all_data', 'manual', 'None'],
-            value=cfg.xlim_mode,
-            on_change=lambda e: (setattr(cfg, 'xlim_mode', str(e.value)), replot()),
-        ).classes('w-40')
-        ui.number('X min', value=cfg.xlim_min or 0.0, min=0, step=1.0,
-                  on_change=lambda e: (setattr(cfg, 'xlim_min', float(e.value)), replot())).classes('w-32')
-        ui.number('X max', value=cfg.xlim_max or 0.0, min=0, step=1.0,
-                  on_change=lambda e: (setattr(cfg, 'xlim_max', float(e.value)), replot())).classes('w-32')
-
-    with ui.row().classes('w-full flex-wrap gap-3 items-center'):
-        ui.select(
-            label='Osa Y',
-            options=['default', 'manual', 'None'],
-            value=cfg.ylim_mode,
-            on_change=lambda e: (setattr(cfg, 'ylim_mode', str(e.value)), replot()),
-        ).classes('w-40')
-        ui.number('Y min', value=cfg.ylim_min or 0.0, min=0, step=0.05,
-                  on_change=lambda e: (setattr(cfg, 'ylim_min', float(e.value)), replot())).classes('w-32')
-        ui.number('Y max', value=cfg.ylim_max or 1.0, min=0, step=0.05,
-                  on_change=lambda e: (setattr(cfg, 'ylim_max', float(e.value)), replot())).classes('w-32')
-
-    ui.separator().classes('q-mt-sm q-mb-sm')
-    ui.markdown('#### Jednotlivé křivky')
-
-    for idx, cs in enumerate(cfg.curve_styles):
-        with ui.card().classes('w-full'):
-            ui.label(f'Křivka {idx + 1}').classes('text-subtitle2')
+    with ui.tab_panels(tabs, value='graph').classes('w-full'):
+        # --- Global graph settings ---
+        with ui.tab_panel('graph'):
             with ui.row().classes('w-full flex-wrap gap-3 items-center'):
-                ui.input('Barva (hex)', value=cs.color,
-                         on_change=lambda e, _cs=cs: (setattr(_cs, 'color', str(e.value)), replot())).classes('w-40')
-                ui.input('Popisek', value=cs.label,
-                         on_change=lambda e, _cs=cs: (setattr(_cs, 'label', str(e.value)), replot())).classes('w-56')
-                ui.select(
-                    label='Čára',
-                    options=['solid', 'dashed', 'dashdot', 'dotted'],
-                    value=cs.linestyle,
-                    on_change=lambda e, _cs=cs: (setattr(_cs, 'linestyle', str(e.value)), replot()),
-                ).classes('w-36')
-                ui.number('Tloušťka', value=cs.linewidth, min=0.1, step=0.1,
-                          on_change=lambda e, _cs=cs: (setattr(_cs, 'linewidth', float(e.value)), replot())).classes('w-28')
-                ui.select(
-                    label='Marker',
-                    options=['o', 's', '^', 'v', 'x', '+', '*', 'None'],
-                    value=cs.marker,
-                    on_change=lambda e, _cs=cs: (setattr(_cs, 'marker', str(e.value)), replot()),
-                ).classes('w-28')
-                ui.number('Velikost', value=cs.markersize, min=1, step=0.5,
-                          on_change=lambda e, _cs=cs: (setattr(_cs, 'markersize', float(e.value)), replot())).classes('w-28')
+                show_title = ui.switch('Nadpis', value=cfg.show_title,
+                                       on_change=lambda e: (setattr(cfg, 'show_title', bool(e.value)), replot()))
+                title = ui.input('Text nadpisu', value=cfg.title,
+                                 on_change=lambda e: (setattr(cfg, 'title', str(e.value)), replot())).classes('w-72')
+                title.bind_enabled_from(show_title, 'value')
 
-            ui.separator()
-            ui.label('Anotace (text v grafu)').classes('text-caption text-grey-7')
             with ui.row().classes('w-full flex-wrap gap-3 items-center'):
-                ui.switch('Zobrazit text', value=cs.additional_text_enabled,
-                          on_change=lambda e, _cs=cs: (setattr(_cs, 'additional_text_enabled', bool(e.value)), replot()))
-                ui.number('Velikost písma', value=cs.additional_text_size, min=6, max=40, step=1,
-                          on_change=lambda e, _cs=cs: (setattr(_cs, 'additional_text_size', float(e.value)), replot())).classes('w-40')
-                ui.button('📍 Umístit kliknutím',
-                          on_click=lambda _=None, i=idx: arm_pick(i)).props('outline')
-                if is_pending(idx):
-                    ui.label('čekám na klik do grafu…').classes('text-caption text-orange-9')
-            with ui.row().classes('w-full flex-wrap gap-3 items-start'):
-                ui.textarea('Text', value=cs.additional_text_text,
-                            on_change=lambda e, _cs=cs: (setattr(_cs, 'additional_text_text', str(e.value)), replot()))\
+                ui.select(
+                    label='Legenda',
+                    options=['both', 'single', 'components_only', 'None'],
+                    value=cfg.legend_mode,
+                    on_change=lambda e: (setattr(cfg, 'legend_mode', str(e.value)), replot()),
+                ).classes('w-64')
+                ui.number('Šířka (inch)', value=cfg.fig_width, min=1, max=20, step=0.5,
+                          on_change=lambda e: (setattr(cfg, 'fig_width', float(e.value)), replot())).classes('w-40')
+                ui.number('Výška (inch)', value=cfg.fig_height, min=1, max=20, step=0.5,
+                          on_change=lambda e: (setattr(cfg, 'fig_height', float(e.value)), replot())).classes('w-40')
+
+            with ui.row().classes('w-full flex-wrap gap-3 items-center'):
+                ui.input('Popisek osy X', value=cfg.xlabel,
+                         on_change=lambda e: (setattr(cfg, 'xlabel', str(e.value)), replot())).classes('w-56')
+                ui.input('Popisek osy Y', value=cfg.ylabel,
+                         on_change=lambda e: (setattr(cfg, 'ylabel', str(e.value)), replot())).classes('w-56')
+
+            with ui.row().classes('w-full flex-wrap gap-3 items-center'):
+                ui.select(
+                    label='Osa X',
+                    options=['default', 'auto', 'all_data', 'manual', 'None'],
+                    value=cfg.xlim_mode,
+                    on_change=lambda e: (setattr(cfg, 'xlim_mode', str(e.value)), replot()),
+                ).classes('w-40')
+                ui.number('X min', value=cfg.xlim_min or 0.0, min=0, step=1.0,
+                          on_change=lambda e: (setattr(cfg, 'xlim_min', float(e.value)), replot())).classes('w-32')
+                ui.number('X max', value=cfg.xlim_max or 0.0, min=0, step=1.0,
+                          on_change=lambda e: (setattr(cfg, 'xlim_max', float(e.value)), replot())).classes('w-32')
+
+            with ui.row().classes('w-full flex-wrap gap-3 items-center'):
+                ui.select(
+                    label='Osa Y',
+                    options=['default', 'manual', 'None'],
+                    value=cfg.ylim_mode,
+                    on_change=lambda e: (setattr(cfg, 'ylim_mode', str(e.value)), replot()),
+                ).classes('w-40')
+                ui.number('Y min', value=cfg.ylim_min or 0.0, min=0, step=0.05,
+                          on_change=lambda e: (setattr(cfg, 'ylim_min', float(e.value)), replot())).classes('w-32')
+                ui.number('Y max', value=cfg.ylim_max or 1.0, min=0, step=0.05,
+                          on_change=lambda e: (setattr(cfg, 'ylim_max', float(e.value)), replot())).classes('w-32')
+
+        # --- Per-curve settings ---
+        for idx, cs in enumerate(cfg.curve_styles):
+            with ui.tab_panel(f'curve_{idx}'):
+                orig = colnames[idx] if idx < len(colnames) else None
+                if orig:
+                    ui.label(f'Původní název: {orig}').classes('text-caption text-grey-7')
+
+                with ui.row().classes('w-full flex-wrap gap-3 items-center'):
+                    def _set_curve_color(color: str, _cs=cs, _idx=idx) -> None:
+                        _cs.color = str(color)
+                        # Update the colored marker in the curve-tab header immediately.
+                        try:
+                            if 0 <= _idx < len(curve_tabs):
+                                curve_tabs[_idx].style(f'--curve-color: {str(color)};')
+                        except Exception:
+                            pass
+                        replot()
+
+                    picker = ColorPickerButton(
+                        icon='colorize',
+                        color=cs.color,
+                        color_type='hexa',
+                        on_pick=lambda e: _set_curve_color(str(getattr(e, 'color', cs.color))),
+                    )
+                    picker.bind_color(cs, 'color')
+                    ui.input('Popisek', value=cs.label,
+                             on_change=lambda e, _cs=cs: (setattr(_cs, 'label', str(e.value)), replot())).classes('w-56')
+                    ui.select(
+                        label='Čára',
+                        options=['solid', 'dashed', 'dashdot', 'dotted'],
+                        value=cs.linestyle,
+                        on_change=lambda e, _cs=cs: (setattr(_cs, 'linestyle', str(e.value)), replot()),
+                    ).classes('w-36')
+                    ui.number('Tloušťka', value=cs.linewidth, min=0.1, step=0.1,
+                              on_change=lambda e, _cs=cs: (setattr(_cs, 'linewidth', float(e.value)), replot())).classes('w-28')
+                    ui.select(
+                        label='Marker',
+                        options=['o', 's', '^', 'v', 'x', '+', '*', 'None'],
+                        value=cs.marker,
+                        on_change=lambda e, _cs=cs: (setattr(_cs, 'marker', str(e.value)), replot()),
+                    ).classes('w-28')
+                    ui.number('Velikost', value=cs.markersize, min=1, step=0.5,
+                              on_change=lambda e, _cs=cs: (setattr(_cs, 'markersize', float(e.value)), replot())).classes('w-28')
+
+                ui.separator().classes('q-mt-sm q-mb-sm')
+                ui.label('Anotace (text v grafu)').classes('text-caption text-grey-7')
+                with ui.row().classes('w-full flex-wrap gap-3 items-center'):
+                    ui.switch('Zobrazit text', value=cs.additional_text_enabled,
+                              on_change=lambda e, _cs=cs: (setattr(_cs, 'additional_text_enabled', bool(e.value)), replot()))
+                    ui.number('Velikost písma', value=cs.additional_text_size, min=6, max=40, step=1,
+                              on_change=lambda e, _cs=cs: (setattr(_cs, 'additional_text_size', float(e.value)), replot())).classes('w-40')
+                    ui.button('📍 Umístit kliknutím', on_click=lambda _=None, i=idx: arm_pick(i)).props('outline')
+                    if is_pending(idx):
+                        ui.label('čekám na klik do grafu…').classes('text-caption text-orange-9')
+
+                # For compactness we use a single-line input. Use "\\n" to insert line breaks.
+                ui.input('Text (\\n pro nový řádek)', value=cs.additional_text_text,
+                         on_change=lambda e, _cs=cs: (setattr(_cs, 'additional_text_text', str(e.value)), replot()))\
                     .classes('w-full')
-            with ui.row().classes('w-full flex-wrap gap-3 items-center'):
-                ui.number('X', value=cs.additional_text_x, step=1.0,
-                          on_change=lambda e, _cs=cs: (setattr(_cs, 'additional_text_x', float(e.value)), replot())).classes('w-32')
-                ui.number('Y', value=cs.additional_text_y, step=0.05,
-                          on_change=lambda e, _cs=cs: (setattr(_cs, 'additional_text_y', float(e.value)), replot())).classes('w-32')
+
+                with ui.row().classes('w-full flex-wrap gap-3 items-center'):
+                    ui.number('X', value=cs.additional_text_x, step=1.0,
+                              on_change=lambda e, _cs=cs: (setattr(_cs, 'additional_text_x', float(e.value)), replot())).classes('w-32')
+                    ui.number('Y', value=cs.additional_text_y, step=0.05,
+                              on_change=lambda e, _cs=cs: (setattr(_cs, 'additional_text_y', float(e.value)), replot())).classes('w-32')
 
 
 def _open_export_dialog(plotters: dict[str, AdvancedPlotter], configs: dict[str, GraphConfig]) -> None:
@@ -1233,8 +1469,20 @@ def _open_export_dialog(plotters: dict[str, AdvancedPlotter], configs: dict[str,
         ui.label('Export grafů').classes('text-h6')
         ui.label('Vyberte formát:')
         with ui.row().classes('gap-2'):
-            ui.button('PNG', on_click=lambda: (dialog.close(), asyncio.create_task(do_export('png'))))
-            ui.button('PDF', on_click=lambda: (dialog.close(), asyncio.create_task(do_export('pdf'))))
-            ui.button('SVG', on_click=lambda: (dialog.close(), asyncio.create_task(do_export('svg'))))
+            async def export_png():
+                dialog.close()
+                await do_export('png')
+
+            async def export_pdf():
+                dialog.close()
+                await do_export('pdf')
+
+            async def export_svg():
+                dialog.close()
+                await do_export('svg')
+
+            ui.button('PNG', on_click=export_png)
+            ui.button('PDF', on_click=export_pdf)
+            ui.button('SVG', on_click=export_svg)
         ui.button('Zavřít', on_click=dialog.close).props('flat')
         dialog.open()

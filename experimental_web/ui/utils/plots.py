@@ -1,6 +1,5 @@
 from dataclasses import asdict
 from io import BytesIO
-from PIL import Image
 from matplotlib import pyplot as plt
 import matplotlib
 from nicegui import ui
@@ -13,15 +12,18 @@ import asyncio
 
 
 def update_plot_image(fig, image_element):
+    """Render matplotlib figure as PNG and set it as data URL on a NiceGUI (interactive_)image.
+    This avoids temporary files (important on Windows) and keeps click coordinates stable.
+    """
+    import base64
     fig_buffer = BytesIO()
     fig.savefig(fig_buffer, format='png')
     fig_buffer.seek(0)
-    # plt.close(fig)
+    data = fig_buffer.getvalue()
+    b64 = base64.b64encode(data).decode('ascii')
+    image_element.set_source(f'data:image/png;base64,{b64}')
     fig.clf()
     plt.close(fig)
-    img = Image.open(fig_buffer)
-    image_element.set_source(img)
-
 
 async def export_all_figures_as_zip_old(plotters, configs, save_format='png'):
     # Use temp dir to hold image files and zip
@@ -58,45 +60,24 @@ async def export_all_figures_as_zip(plotters: dict,
                                     cleanup_delay: float = 15.0):
     assert save_format in ('png', 'pdf', 'svg'), f"Unsupported format: {save_format}"
 
-    # Create a real temp file for the ZIP archive
-    fd, zip_path = tempfile.mkstemp(suffix='.zip')
-    os.close(fd)  # Close the file descriptor, we only need the path
-
+    # NOTE: Use in-memory bytes to avoid temp-file issues on Windows.
     try:
-        with zipfile.ZipFile(zip_path, mode='w', compression=zipfile.ZIP_DEFLATED) as zipf:
+        out = BytesIO()
+        with zipfile.ZipFile(out, mode='w', compression=zipfile.ZIP_DEFLATED) as zipf:
             for name, plotter in plotters.items():
-                # 🧠 Your custom plotter logic
-                fig = plotter.plot(
-                    **asdict(configs[plotter.name]),
-                    ui=True
-                )
+                fig = plotter.plot(**asdict(configs[plotter.name]), ui=True)
                 img_buf = BytesIO()
                 fig.savefig(img_buf, format=save_format, bbox_inches='tight')
                 plt.close(fig)
                 img_buf.seek(0)
-
-                # Add image to the zip in memory
-                c_name = name.replace(":","_")
+                c_name = name.replace(':', '_')
                 zipf.writestr(f'graph_{c_name}.{save_format}', img_buf.read())
 
-        # 🎉 Download trigger
+        zip_bytes = out.getvalue()
+
         now = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f'all_graphs_{now}.{save_format}.zip'
-        ui.download(zip_path, filename=filename)
-
-        # ✅ Notify user
+        ui.download(zip_bytes, filename=filename)
         ui.notify(f'📦 {len(plotters)} grafů exportováno jako {save_format.upper()}')
-
-        # ⏳ Optional: cleanup
-        if auto_cleanup:
-            async def delayed_delete(path: str, delay: float):
-                await asyncio.sleep(delay)
-                try:
-                    os.remove(path)
-                except Exception as e:
-                    print(f'Warning: Failed to delete {path}: {e}')
-
-            asyncio.create_task(delayed_delete(zip_path, cleanup_delay))
-
     except Exception as e:
         ui.notify(f'❌ Chyba při exportu: {e}', type='negative')

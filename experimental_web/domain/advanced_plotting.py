@@ -240,6 +240,38 @@ class AdvancedPlotter:
         Y = ymin + ax_rel_y * (ymax - ymin)
         return X, Y
 
+    def image_to_data(self, image_x: float, image_y: float) -> tuple[float, float]:
+        """Convert image pixel coordinates (from ui.interactive_image) into data coordinates.
+
+        NiceGUI's event provides ``image_x``/``image_y`` in pixel coordinates of the *original* image.
+        We keep the figure pixel geometry (fig_w/fig_h) and axes pixel bbox (x0..y1) aligned with
+        the PNG we render (no bbox_inches='tight' for UI images).
+        """
+        v = self.axes_values or {}
+        fig_w = float(v.get('fig_w') or 0.0)
+        fig_h = float(v.get('fig_h') or 0.0)
+        x0 = float(v.get('x0') or 0.0)
+        y0 = float(v.get('y0') or 0.0)
+        x1 = float(v.get('x1') or 0.0)
+        y1 = float(v.get('y1') or 0.0)
+        xmin, xmax = v.get('xlim', (0.0, 1.0))
+        ymin, ymax = v.get('ylim', (0.0, 1.0))
+
+        if not (fig_w > 0 and fig_h > 0 and x1 > x0 and y1 > y0):
+            # Fallback to rel_to_data using normalized bbox
+            return self.rel_to_data(float(image_x) / max(fig_w, 1.0), float(image_y) / max(fig_h, 1.0))
+
+        # Convert from top-left image origin to matplotlib's bottom-left origin
+        x_pix = float(image_x)
+        y_pix = float(fig_h) - float(image_y)
+
+        ax_rel_x = (x_pix - x0) / (x1 - x0)
+        ax_rel_y = (y_pix - y0) / (y1 - y0)
+
+        X = float(xmin) + ax_rel_x * (float(xmax) - float(xmin))
+        Y = float(ymin) + ax_rel_y * (float(ymax) - float(ymin))
+        return X, Y
+
     def save_axes_values(self, fig, ax):
         """
         Extracts all geometric information needed to convert pixel clicks
@@ -252,19 +284,31 @@ class AdvancedPlotter:
             - data limits (xlim, ylim)
             - DPI
         """
-        # --- FIGURE SIZE IN PIXELS ---
-        fig_w, fig_h = fig.get_size_inches() * fig.dpi
+        # Make sure layout is finalized and a renderer exists
+        try:
+            fig.canvas.draw()
+        except Exception:
+            pass
 
-        # --- AXES BOUNDING BOX (pixel coords) ---
-        # get_window_extent returns in display/pixel units
-        bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans)
-        x0, y0, x1, y1 = bbox.x0, bbox.y0, bbox.x1, bbox.y1
+        # --- FIGURE SIZE IN PIXELS (matches saved PNG for UI rendering) ---
+        try:
+            fig_w, fig_h = fig.canvas.get_width_height()
+        except Exception:
+            fig_w, fig_h = fig.get_size_inches() * fig.dpi
 
-        # --- NORMALIZED AXIS BBOX (0..1) ---
-        nx0 = x0 / fig_w
-        ny0 = y0 / fig_h
-        nx1 = x1 / fig_w
-        ny1 = y1 / fig_h
+        # --- AXES BOUNDING BOX (pixel coords, origin bottom-left) ---
+        try:
+            renderer = fig.canvas.get_renderer()
+            bbox = ax.get_window_extent(renderer=renderer)
+        except Exception:
+            bbox = ax.get_window_extent()
+        x0, y0, x1, y1 = float(bbox.x0), float(bbox.y0), float(bbox.x1), float(bbox.y1)
+
+        # --- NORMALIZED AXIS BBOX (0..1, origin bottom-left) ---
+        nx0 = x0 / float(fig_w)
+        ny0 = y0 / float(fig_h)
+        nx1 = x1 / float(fig_w)
+        ny1 = y1 / float(fig_h)
 
         # --- DATA LIMITS ---
         xlim = ax.get_xlim()

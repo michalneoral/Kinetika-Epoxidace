@@ -20,6 +20,8 @@ from experimental_web.ui.experiment.compute_builder.graph import (
 from experimental_web.ui.experiment.compute_builder.ode_generator import generate_odes_model
 from experimental_web.logging_setup import get_logger
 from experimental_web.ui.instrumentation import wrap_ui_handler
+from experimental_web.core.state import get_state
+from experimental_web.ui.utils.staleness import compute_staleness
 
 
 log = get_logger(__name__)
@@ -85,6 +87,7 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
     def render_saved() -> None:
         saved_container.clear()
         items = repo.list_for_experiment(experiment_id)
+        _run, stale = compute_staleness(experiment_id)
         with saved_container:
             ui.label("Uložené výpočty/grafy").classes("text-h6")
             if not items:
@@ -94,7 +97,14 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
             for idx, s in enumerate(items):
                 with ui.card().classes("w-full"):
                     with ui.row().classes("w-full items-center justify-between"):
-                        ui.label(s.name).classes("text-bold")
+                        with ui.row().classes('items-center gap-2'):
+                            ui.label(s.name).classes("text-bold")
+                            # Staleness indicator: definition/settings changed since last run
+                            try:
+                                if stale.custom_changed.get(s.name, False):
+                                    ui.badge('Změněno', color='orange').props('outline')
+                            except Exception:
+                                pass
 
                         with ui.row().classes("items-center gap-2"):
                             ui.button(
@@ -148,6 +158,12 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
     def delete_confirm(cid: int) -> None:
         log.info('[UI] computations.delete_confirm: id=%s', cid)
         repo.delete(cid)
+        # Any change in computations affects graphs/results staleness and graph regeneration.
+        try:
+            st = get_state()
+            st.graphs_version = st.graphs_version + 1
+        except Exception:
+            pass
         delete_dialog.close()
         render_saved()
         ui.notify("Smazáno.", type="positive")
@@ -468,6 +484,13 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
                     repo.update(existing.id, name, table_name, used_heads, graph_state)
                 else:
                     repo.insert(experiment_id, name, table_name, used_heads, graph_state)
+
+                # Bump graphs version so the graphs tab can refresh immediately.
+                try:
+                    st = get_state()
+                    st.graphs_version = st.graphs_version + 1
+                except Exception:
+                    pass
 
                 render_saved()
                 dialog.close()

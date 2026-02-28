@@ -15,6 +15,7 @@ class SessionState:
     current_excel_filename: str = ""
     current_excel_sheet: str = ""
     data_version: int = 0
+    graphs_version: int = 0
 
 
 class StateProxy:
@@ -82,6 +83,18 @@ class StateProxy:
     def data_version(self, value: int) -> None:
         self._b["data_version"] = int(value)
 
+    @property
+    def graphs_version(self) -> int:
+        v = self._b.get("graphs_version", 0)
+        try:
+            return int(v)
+        except Exception:
+            return 0
+
+    @graphs_version.setter
+    def graphs_version(self, value: int) -> None:
+        self._b["graphs_version"] = int(value)
+
 
 def get_state() -> StateProxy:
     """Return per-user session state.
@@ -89,7 +102,15 @@ def get_state() -> StateProxy:
     Stored as a plain dict in app.storage.user for persistence and compatibility.
     """
     if "state" not in app.storage.user:
-        app.storage.user["state"] = {"current_experiment_id": None, "current_experiment_name": "", "current_excel_file_id": None, "current_excel_filename": "", "current_excel_sheet": "", "data_version": 0}
+        app.storage.user["state"] = {
+            "current_experiment_id": None,
+            "current_experiment_name": "",
+            "current_excel_file_id": None,
+            "current_excel_filename": "",
+            "current_excel_sheet": "",
+            "data_version": 0,
+            "graphs_version": 0,
+        }
     else:
         # migration/normalization: if older versions stored something else, convert to dict
         s = app.storage.user["state"]
@@ -109,6 +130,7 @@ def get_state() -> StateProxy:
             s.setdefault("current_excel_filename", "")
             s.setdefault("current_excel_sheet", "")
             s.setdefault("data_version", 0)
+            s.setdefault("graphs_version", 0)
         else:
             # ObservableDict behaves like dict but is not a real dict type; treat as mapping
             try:
@@ -118,6 +140,7 @@ def get_state() -> StateProxy:
                 s.setdefault("current_excel_filename", "")  # type: ignore[attr-defined]
                 s.setdefault("current_excel_sheet", "")  # type: ignore[attr-defined]
                 s.setdefault("data_version", 0)  # type: ignore[attr-defined]
+                s.setdefault("graphs_version", 0)  # type: ignore[attr-defined]
             except Exception:
                 app.storage.user["state"] = {
                     "current_experiment_id": None,
@@ -126,6 +149,7 @@ def get_state() -> StateProxy:
                     "current_excel_filename": "",
                     "current_excel_sheet": "",
                     "data_version": 0,
+                    "graphs_version": 0,
                 }
 
     return StateProxy(app.storage.user["state"])

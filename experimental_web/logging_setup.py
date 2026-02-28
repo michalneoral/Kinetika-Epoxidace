@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextvars
 import itertools
 import logging
+import sys
 import threading
 from collections import deque
 from contextlib import contextmanager
@@ -36,6 +37,34 @@ try:
     from rich.logging import RichHandler  # type: ignore
 except Exception:  # pragma: no cover
     RichHandler = None
+
+
+if RichHandler is not None:
+    class SafeRichHandler(RichHandler):
+        """A RichHandler variant that must never crash the app.
+
+        Rich traceback rendering can sometimes hit recursion issues on complex exception chains.
+        We fall back to a plain stderr line in that case.
+        """
+
+        def emit(self, record: logging.LogRecord) -> None:  # pragma: no cover
+            try:
+                super().emit(record)
+            except RecursionError:
+                try:
+                    msg = self.format(record)
+                except Exception:
+                    msg = record.getMessage()
+                try:
+                    sys.stderr.write(msg + "\n")
+                except Exception:
+                    pass
+            except Exception:
+                # As a last resort, try to avoid breaking the app.
+                try:
+                    sys.stderr.write(record.getMessage() + "\n")
+                except Exception:
+                    pass
 
 
 @dataclass(frozen=True)
@@ -181,7 +210,7 @@ def setup_logging(debug: Optional[int]) -> None:
         root.removeHandler(h)
 
     if RichHandler is not None:
-        handler = RichHandler(
+        handler = SafeRichHandler(
             rich_tracebacks=True,
             show_time=True,
             show_level=True,
