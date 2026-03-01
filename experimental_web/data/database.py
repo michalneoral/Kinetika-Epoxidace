@@ -99,10 +99,16 @@ def ensure_schema(db: Database) -> None:
             """
             CREATE TABLE IF NOT EXISTS user_settings (
                 key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
+                value TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+
+        # user_settings: older schemas missed created_at/updated_at
+        _add_column_if_missing(conn, 'user_settings', 'created_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
+        _add_column_if_missing(conn, 'user_settings', 'updated_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
 
         # experiments
         conn.execute(

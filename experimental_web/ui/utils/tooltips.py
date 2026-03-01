@@ -9,8 +9,40 @@ from nicegui import ui
 DEFAULT_TOOLTIP_STYLE = 'max-width: 460px; white-space: normal;'
 
 # Quasar's QTooltip supports a `delay` (ms) before showing the tooltip.
-# We default to 1s so tooltips don't pop up immediately on casual hovers.
-DEFAULT_TOOLTIP_DELAY_MS = 1000
+# Default is 2s (can be overridden by global settings in the UI).
+DEFAULT_TOOLTIP_DELAY_MS = 2000
+
+
+def push_tooltip_settings_to_client(*, delay_ms: int, enabled: bool | None = None) -> None:
+    """Publish tooltip settings to the browser.
+
+    We keep tooltip delay/enable flags in `window.*` so all tooltips can bind to
+    them dynamically (no need to re-render components).
+    """
+    _ensure_idle_tooltip_js()
+
+    # Convention:
+    # - delay_ms < 0  => tooltips disabled
+    # - delay_ms == 0 => show immediately
+    # - delay_ms > 0  => show after the delay
+    stored_delay = int(delay_ms)
+    delay_ms = int(max(0, stored_delay))
+    if enabled is None:
+        enabled = stored_delay >= 0
+    ui.run_javascript(
+        """
+(() => {
+  window.__kinetika_tt_delay_ms = %d;
+  window.__kinetika_tt_disable = %s;
+  // Hard-disable via CSS class to stay compatible across Quasar/NiceGUI versions.
+  // (Some versions don't expose a reliable `disable` prop on QTooltip.)
+  try {
+    document.body.classList.toggle('kinetika-tooltips-disabled', window.__kinetika_tt_disable);
+  } catch (_) {}
+})();
+"""
+        % (delay_ms, "false" if enabled else "true")
+    )
 
 
 def _ensure_idle_tooltip_js() -> None:
@@ -30,6 +62,30 @@ def _ensure_idle_tooltip_js() -> None:
 (() => {
   const FN = '__kinetika_tt_reset_on_move';
   if (window[FN]) return;
+
+  // Defaults (can be overridden by push_tooltip_settings_to_client).
+  if (window.__kinetika_tt_delay_ms === undefined) window.__kinetika_tt_delay_ms = 2000;
+  if (window.__kinetika_tt_disable === undefined) window.__kinetika_tt_disable = false;
+
+  // Ensure a CSS rule exists which can fully hide tooltips.
+  // This is used for the "Nezobrazovat" mode and is more robust than relying
+  // on a component prop.
+  const STYLE_ID = 'kinetika-tooltips-style';
+  if (!document.getElementById(STYLE_ID)) {
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+      body.kinetika-tooltips-disabled .q-tooltip,
+      body.kinetika-tooltips-disabled .q-tooltip__content {
+        display: none !important;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  try {
+    document.body.classList.toggle('kinetika-tooltips-disabled', window.__kinetika_tt_disable);
+  } catch (_) {}
 
   window[FN] = (evt) => {
     const el = evt && evt.currentTarget;
@@ -61,7 +117,7 @@ def attach_tooltip(
     detail: str,
     *,
     style: str = DEFAULT_TOOLTIP_STYLE,
-    delay_ms: int = DEFAULT_TOOLTIP_DELAY_MS,
+    delay_ms: int | None = None,
 ) -> None:
     """Attach a tooltip to a NiceGUI element.
 
@@ -82,8 +138,16 @@ def attach_tooltip(
         pass
 
     def _render() -> None:
-        # Use ":delay" so Vue treats it as a number prop (not a string).
-        with ui.tooltip().props(f':delay="{int(delay_ms)}"').classes('q-pa-sm').style(style):
+        # Bind delay dynamically to global window settings.
+        # Disabling is handled robustly via a body CSS class.
+        if delay_ms is None:
+            delay_expr = 'window.__kinetika_tt_delay_ms'
+        else:
+            delay_expr = str(int(delay_ms))
+
+        with ui.tooltip().props(
+            f':delay="{delay_expr}"'
+        ).classes('q-pa-sm').style(style):
             ui.markdown(f'**{title}**\n\n{detail}')
 
     # Prefer attaching inside the element context (most reliable).

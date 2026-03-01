@@ -211,6 +211,33 @@ class SettingsRepository:
         self.db = Database(db_path)
         self.db.ensure_schema()
 
+    def _upsert(self, key: str, value: str) -> None:
+        """UPSERT into user_settings with backward-compatible timestamp handling."""
+        now = utc_now_iso()
+        with self.db.connect() as con:
+            cols = {r[1] for r in con.execute("PRAGMA table_info(user_settings)").fetchall()}
+            ts_col = "updated_at" if "updated_at" in cols else ("created_at" if "created_at" in cols else None)
+
+            if ts_col:
+                con.execute(
+                    f"""
+                    INSERT INTO user_settings(key, value, {ts_col})
+                    VALUES(?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value, {ts_col}=excluded.{ts_col}
+                    """,
+                    (key, value, now),
+                )
+            else:
+                con.execute(
+                    """
+                    INSERT INTO user_settings(key, value)
+                    VALUES(?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                    """,
+                    (key, value),
+                )
+            con.commit()
+
     def get_theme_mode(self, default: str = "auto") -> str:
         with self.db.connect() as con:
             row = con.execute("SELECT value FROM user_settings WHERE key='theme_mode'").fetchone()
@@ -219,17 +246,63 @@ class SettingsRepository:
     def set_theme_mode(self, mode: str) -> None:
         if mode not in ("auto", "light", "dark"):
             raise ValueError("theme_mode must be one of: auto, light, dark")
-        now = utc_now_iso()
+        self._upsert('theme_mode', mode)
+
+    # --- Global help/tooltip settings ---
+    def get_help_tooltip_delay_ms(self, default: int = 2000) -> int:
+        """Return the tooltip delay in milliseconds.
+
+        Convention:
+        - <0 => disabled
+        - 0 => show immediately
+        - >0 => delay before showing
+        """
         with self.db.connect() as con:
-            con.execute(
-                """
-                INSERT INTO user_settings(key, value, updated_at)
-                VALUES('theme_mode', ?, ?)
-                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-                """,
-                (mode, now),
-            )
-            con.commit()
+            row = con.execute("SELECT value FROM user_settings WHERE key='help_tooltip_delay_ms'").fetchone()
+        if not row:
+            return int(default)
+        try:
+            v = int(str(row['value']).strip())
+        except Exception:
+            return int(default)
+        # allow negative value to represent "disabled"
+        return v
+
+    def set_help_tooltip_delay_ms(self, delay_ms: int) -> None:
+        # allow negative values ("disabled")
+        self._upsert('help_tooltip_delay_ms', str(int(delay_ms)))
+
+    # --- Global UI colors (Quasar/NiceGUI theme palette) ---
+    def get_ui_color(self, name: str, default: str) -> str:
+        """Return a stored UI color or a default.
+
+        Colors are stored as hex strings (e.g. "#1976D2").
+        """
+        key = f'ui_color_{name}'
+        with self.db.connect() as con:
+            row = con.execute("SELECT value FROM user_settings WHERE key=?", (key,)).fetchone()
+        return str(row["value"]) if row else str(default)
+
+    def set_ui_color(self, name: str, value: str) -> None:
+        key = f'ui_color_{name}'
+        self._upsert(key, str(value))
+
+    def get_ui_colors(self, defaults: dict[str, str]) -> dict[str, str]:
+        """Return a dict of palette colors (merged over defaults)."""
+        out = dict(defaults)
+        with self.db.connect() as con:
+            for k in list(defaults.keys()):
+                row = con.execute(
+                    "SELECT value FROM user_settings WHERE key=?",
+                    (f'ui_color_{k}',),
+                ).fetchone()
+                if row:
+                    out[k] = str(row["value"])
+        return out
+
+    def set_ui_colors(self, colors: dict[str, str]) -> None:
+        for k, v in colors.items():
+            self.set_ui_color(k, v)
 
 
 class ExperimentFileRepository:

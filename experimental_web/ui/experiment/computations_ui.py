@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
+import sqlite3
+
 import pandas as pd
 from nicegui import ui
 
@@ -75,6 +77,42 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
 
     def auto_name(n: int) -> str:
         return f"Výpočet {n}"
+
+    def _normalize_name_key(s: str) -> str:
+        """Normalize a user-visible name for uniqueness checks.
+
+        SQLite UNIQUE may be case-sensitive depending on collation. For UX we treat names
+        case-insensitively and trim whitespace.
+        """
+
+        return (s or "").strip().casefold()
+
+    def _make_unique_variant(base: str, existing_names: set[str]) -> str:
+        """Return a non-colliding name by appending a numeric suffix if needed."""
+
+        base = (base or "").strip()
+        if not base:
+            base = "Výpočet"
+
+        existing_keys = {_normalize_name_key(x) for x in existing_names}
+        if _normalize_name_key(base) not in existing_keys:
+            return base
+
+        i = 2
+        while True:
+            candidate = f"{base} ({i})"
+            if _normalize_name_key(candidate) not in existing_keys:
+                return candidate
+            i += 1
+
+    def _make_unique_auto_name(existing_names: set[str]) -> str:
+        existing_keys = {_normalize_name_key(x) for x in existing_names}
+        i = 1
+        while True:
+            candidate = auto_name(i)
+            if _normalize_name_key(candidate) not in existing_keys:
+                return candidate
+            i += 1
 
     def make_default_graph_state(nodes: List[str]) -> GraphState:
         return GraphState(nodes=list(nodes))
@@ -534,7 +572,31 @@ Použije aktuální nastavení inicializace/t_shift z ProcessingConfig.""")
                     ui.notify("Nejdřív načti sloupce (Pokračovat).", type="warning")
                     return
 
-                name = (name_input.value or "").strip() or auto_name(len(items) + 1)
+                # Always check uniqueness of the computation name within the experiment.
+                current_items = repo.list_for_experiment(experiment_id)
+                existing_names = {
+                    it.name
+                    for it in current_items
+                    if not (edit_mode and existing is not None and it.id == existing.id)
+                }
+
+                raw_name = (name_input.value or "").strip()
+                if edit_mode and existing is not None:
+                    # In edit mode: empty name means keep the original.
+                    name = raw_name or existing.name
+                else:
+                    # New item: empty name => pick the first available auto-name.
+                    name = raw_name or _make_unique_auto_name(existing_names)
+
+                # Enforce uniqueness (case-insensitive) before hitting the DB UNIQUE constraint.
+                if _normalize_name_key(name) in {_normalize_name_key(x) for x in existing_names}:
+                    suggested = _make_unique_variant(name, existing_names)
+                    name_input.value = suggested
+                    ui.notify(
+                        f"Název '{name}' už v tomto experimentu existuje. Navrhuji '{suggested}'.",
+                        type="warning",
+                    )
+                    return
                 table_name = state["loaded_table"]
                 used_heads = [x.key for x in state["used"]]
 
@@ -559,10 +621,18 @@ Použije aktuální nastavení inicializace/t_shift z ProcessingConfig.""")
 
                 sync_graph_state_with_used_columns(graph_state, used_heads)
 
-                if edit_mode:
-                    repo.update(existing.id, name, table_name, used_heads, graph_state)
-                else:
-                    repo.insert(experiment_id, name, table_name, used_heads, graph_state)
+                try:
+                    if edit_mode:
+                        repo.update(existing.id, name, table_name, used_heads, graph_state)
+                    else:
+                        repo.insert(experiment_id, name, table_name, used_heads, graph_state)
+                except sqlite3.IntegrityError:
+                    # Defensive: in case another entry was created concurrently.
+                    ui.notify(
+                        f"Název '{name}' už v tomto experimentu existuje. Zvolte prosím jiný název.",
+                        type="warning",
+                    )
+                    return
 
                 # Bump graphs version so the graphs tab can refresh immediately.
                 try:
