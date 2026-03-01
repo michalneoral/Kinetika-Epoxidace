@@ -19,10 +19,12 @@ def page_experiment() -> None:
 
 
         with ui.tabs().classes("w-full") as tabs:
-            tab_load = ui.tab("načtení dat")
-            tab_process = ui.tab("zpracování")
-            tab_speeds = ui.tab("rychlosti")
-            tab_graphs = ui.tab("grafy")
+            # Stacked tabs (icon above text) improve readability and scanning.
+            # Icon names follow Quasar/Material icons.
+            tab_load = ui.tab("načtení dat").props('icon=upload_file stacked')
+            tab_process = ui.tab("zpracování").props('icon=table_view stacked')
+            tab_speeds = ui.tab("rychlosti").props('icon=speed stacked')
+            tab_graphs = ui.tab("grafy").props('icon=show_chart stacked')
 
         with ui.tab_panels(tabs, value=tab_load).classes("w-full"):
             with ui.tab_panel(tab_load):

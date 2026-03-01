@@ -321,7 +321,9 @@ class TableProcessor:
         c_columns = ['time'] + columns
         conc_data = df[c_columns].astype(np.float64).fillna(0.0).values
 
-        # Clamp t_max to the available experiment time range.
+        # NOTE: We intentionally do NOT clamp t_max from above.
+        # The user may want to simulate/plot beyond the last measurement time.
+        # When not provided (<=0), we still default to the available max_time.
         try:
             max_time = float(pd.to_numeric(df['time'], errors='coerce').max())
             if not np.isfinite(max_time) or max_time <= 0:
@@ -337,7 +339,7 @@ class TableProcessor:
             if req_tmax <= 0:
                 kwargs['t_max'] = max(1.0, max_time)
             else:
-                kwargs['t_max'] = min(max(1.0, req_tmax), max(1.0, max_time))
+                kwargs['t_max'] = max(1.0, req_tmax)
 
         model = KineticModel(
             concentration_data=conc_data,

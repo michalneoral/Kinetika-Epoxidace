@@ -202,7 +202,7 @@ def _compute_kinetics_job(
             )
 
             pnames = list(item.get("param_names") or [])
-            # Clamp t_max to the available time range in the selected data.
+            # Do NOT clamp t_max from above; allow extrapolation beyond the last data time.
             try:
                 max_time = float(conc_data[:, 0].max())
                 if not (max_time > 0):
@@ -213,10 +213,11 @@ def _compute_kinetics_job(
                 req_tmax = float(params2.get('t_max', 400.0) or 0)
             except Exception:
                 req_tmax = 0.0
-            if max_time > 0:
-                tmax_eff = min(max(1.0, req_tmax if req_tmax > 0 else max_time), max_time)
+
+            if req_tmax > 0:
+                tmax_eff = max(1.0, req_tmax)
             else:
-                tmax_eff = max(1.0, req_tmax if req_tmax > 0 else 400.0)
+                tmax_eff = max(1.0, max_time if max_time > 0 else 400.0)
 
             model = KineticModel(
                 concentration_data=conc_data,
@@ -270,17 +271,17 @@ def _compute_kinetics_job(
                             order=['d' + s for s in list(ode_ctrl.state_names)],
                         )
 
-                        # Clamp t_max for control data as well
+                        # Do NOT clamp t_max from above for control data either.
                         try:
                             max_time2 = float(conc_ctrl[:, 0].max())
                             if not (max_time2 > 0):
                                 max_time2 = 0.0
                         except Exception:
                             max_time2 = 0.0
-                        if max_time2 > 0:
-                            tmax_ctrl = min(max(1.0, req_tmax if req_tmax > 0 else max_time2), max_time2)
+                        if req_tmax > 0:
+                            tmax_ctrl = max(1.0, req_tmax)
                         else:
-                            tmax_ctrl = max(1.0, req_tmax if req_tmax > 0 else 400.0)
+                            tmax_ctrl = max(1.0, max_time2 if max_time2 > 0 else 400.0)
 
                         control_specs[key] = {
                             'cols': cols_ctrl,
@@ -1218,24 +1219,24 @@ Typicky v minutách (podle jednotek času ve vašich datech).""",
                         pass
                     return 400.0
 
+                # NOTE: t_max and t_max_plot are intentionally NOT capped from above.
+                # Users may want to extrapolate the simulation/plots beyond the last data time.
                 tmax_max = _max_time_from_cache()
                 tmax = ui.number(
                     label=r"t_{max} (čas pro simulaci)",
                     min=1.0,
-                    max=max(1.0, tmax_max),
                     precision=1,
                 ).bind_value(params, 't_max').classes('w-80')
 
                 attach_tooltip(
                     tmax,
                     't_max',
-                    'Maximální čas simulace (do jakého času se integrují ODE).\n\nDoporučení: nechte zhruba na maximálním dostupném čase ve vašich datech.',
+                    f"Maximální čas simulace (do jakého času se integrují ODE).\n\nDoporučení: nechte zhruba na maximálním dostupném čase ve vašich datech (cca {float(tmax_max):.3g}). Hodnota může být i větší.",
                 )
 
                 tmax_plot = ui.number(
                     label=r"t_{max,plot} (max xlim grafu)",
                     min=1.0,
-                    max=max(1.0, tmax_max),
                     precision=1,
                 ).bind_value(params, 't_max_plot').classes('w-80')
                 tmax_plot.on('update:model-value', wrap_ui_handler('processing.t_max_plot.change', lambda e: None, level=10, data=lambda e: {'value': getattr(e, 'value', None)}))
