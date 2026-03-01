@@ -53,8 +53,12 @@ class AdvancedPlotter:
             'curve_styles': None,
             'legend_mode': 'components_only',
             'show_title': True,
-            'xlabel': "Čas",
-            'ylabel': "Koncentrace",
+            'xlabel': "čas [s]",
+            'ylabel': "koncentrace [-]",
+            # Matplotlib artist clipping (Line2D, markers, text).
+            # True keeps the current/default behavior (clipped to axes).
+            # False allows drawing outside the axes (over spines/labels).
+            'clip_on': True,
             'xlim_mode': 'default',
             'xlim': None,
             'ylim': (0, 1),
@@ -76,6 +80,7 @@ class AdvancedPlotter:
         show_title = config['show_title']
         xlabel = config['xlabel']
         ylabel = config['ylabel']
+        clip_on = bool(config.get('clip_on', True))
         x_lim_value = config['xlim']
         if 'xlim_min' in config and config['xlim_min'] is not None and 'xlim_max' in config and config[
             'xlim_max'] is not None:
@@ -117,9 +122,25 @@ class AdvancedPlotter:
             markersize = style.get("markersize", 6)
             label = style.get("label", column_names[i])
 
-            ax.plot(sim_t, sim_y[i], color=color, linestyle=linestyle, linewidth=linewidth)
-            ax.plot(data_t, data_y[:, i], linestyle="None", marker=marker,
-                    color=color, markersize=markersize)
+            # Apply clip_on consistently to all artists so the user can decide
+            # whether curves/markers/text are clipped to the axes.
+            line_sim = ax.plot(sim_t, sim_y[i], color=color, linestyle=linestyle, linewidth=linewidth)[0]
+            line_sim.set_clip_on(clip_on)
+            # Prevent layout engines (tight_layout / bbox_inches='tight') from
+            # changing axes geometry when clip_on=False allows drawing outside axes.
+            # This keeps the plot area stable and avoids "weird" axis/tight behavior.
+            line_sim.set_in_layout(False)
+
+            line_meas = ax.plot(
+                data_t,
+                data_y[:, i],
+                linestyle="None",
+                marker=marker,
+                color=color,
+                markersize=markersize,
+            )[0]
+            line_meas.set_clip_on(clip_on)
+            line_meas.set_in_layout(False)
             custom_lines.append(Line2D([0], [0], color=color, marker=marker, linestyle=linestyle, label=label))
 
             if style.get('additional_text_enabled', False):
@@ -128,7 +149,10 @@ class AdvancedPlotter:
                 adtext_text = style.get('additional_text_text', 'bla\n bla')
                 adtext_text = adtext_text.replace('\\n', '\n')
                 adtext_size = style.get('additional_text_size', 14)
-                ax.text(adtext_x, adtext_y, adtext_text, fontsize=adtext_size, color=color)
+                txt = ax.text(adtext_x, adtext_y, adtext_text, fontsize=adtext_size, color=color, clip_on=clip_on)
+                # Same rationale as for lines: do not let free-drawing text
+                # influence tight_layout / bbox_inches='tight'.
+                txt.set_in_layout(False)
 
         # Add legends depending on the mode
         self.add_legend(ax, custom_lines, legend_mode)
@@ -141,19 +165,22 @@ class AdvancedPlotter:
         if show_title and title is not None:
             plt.title(title)
         # print(grid_config)
+        # --- Grid (major/minor) ---
         if grid_config_minor is not None and grid_config_minor.get("visible", True):
-            if 'color' in grid_config_minor:
-                grid_config_minor['color'], grid_config_minor['alpha'] = convert_color(grid_config_minor['color'],
-                                                                                       'rgb-a')
-            plt.grid(**grid_config_minor)
-            plt.minorticks_on()
-        if grid_config is not None and grid_config.get("visible", True):
-            if 'color' in grid_config:
-                grid_config['color'], grid_config['alpha'] = convert_color(grid_config['color'], 'rgb-a')
-            plt.grid(**grid_config)
+            gc_minor = {k: v for k, v in dict(grid_config_minor).items() if v is not None}
+            gc_minor.setdefault('which', 'minor')
+            if 'color' in gc_minor and gc_minor.get('color'):
+                gc_minor['color'], gc_minor['alpha'] = convert_color(gc_minor['color'], 'rgb-a')
+            # Minor grid needs minor ticks enabled.
+            ax.minorticks_on()
+            ax.grid(**gc_minor)
 
-        # print(grid_config)
-        # print(grid_config_minor)
+        if grid_config is not None and grid_config.get("visible", True):
+            gc_major = {k: v for k, v in dict(grid_config).items() if v is not None}
+            gc_major.setdefault('which', 'major')
+            if 'color' in gc_major and gc_major.get('color'):
+                gc_major['color'], gc_major['alpha'] = convert_color(gc_major['color'], 'rgb-a')
+            ax.grid(**gc_major)
 
         plt.tight_layout()
 

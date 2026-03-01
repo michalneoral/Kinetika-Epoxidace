@@ -303,14 +303,6 @@ def frame(title: str):
             'Otevře dialog globálních nastavení aplikace (např. chování nápovědy/tooltipů). Nastavení je nezávislé na experimentech.',
         )
 
-        btn_about = ui.button("O aplikaci", on_click=lambda: ui.notify(f"Data: {APP_DIR} | DB: {DB_PATH}")).props(
-            "flat text-color=white"
-        )
-        attach_tooltip(
-            btn_about,
-            "O aplikaci",
-            "Zobrazí základní info o běhu aplikace (umístění dat a cesta k databázi).",
-        )
 
     # --- Settings dialog content ---
     with settings_dialog, ui.card().classes('w-[720px]'):
@@ -323,6 +315,7 @@ def frame(title: str):
         with tabs:
             ui.tab('Vzhled').props('name="appearance"')
             ui.tab('Nápověda').props('name="help"')
+            ui.tab('O aplikaci').props('name="about"')
 
         with ui.tab_panels(tabs, value='appearance').classes('w-full'):
 
@@ -452,6 +445,21 @@ def frame(title: str):
                     'Nastavení nápovědy',
                     'Určuje, jestli se mají zobrazovat tooltippy a po jaké prodlevě. "Nezobrazovat" je vypne úplně. "Zobrazit hned" zobrazí tooltip bez čekání.',
                 )
+
+            # --- About tab ---
+            with ui.tab_panel('about'):
+                about_title = ui.label('O aplikaci').classes('text-subtitle1')
+                attach_tooltip(
+                    about_title,
+                    'O aplikaci',
+                    'Základní info o běhu aplikace (umístění dat a cesta k databázi).',
+                )
+                ui.label('Základní informace o běhu aplikace.').classes('text-caption text-grey')
+
+                with ui.column().classes('q-gutter-xs q-mt-sm'):
+                    ui.label(f'Data: {APP_DIR}').classes('text-body2')
+                    ui.label(f'Databáze: {DB_PATH}').classes('text-body2')
+                    ui.label(f'Debug: {"ON" if is_debug_enabled() else "OFF"}').classes('text-body2')
 
         with ui.row().classes('justify-end w-full q-pt-md'):
             close_btn = ui.button('Zavřít', on_click=settings_dialog.close).props('flat')

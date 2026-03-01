@@ -135,8 +135,8 @@ def plot_debug_merged(
     else:  # components_only
         ax.legend(handles=legend_handles, title=None)
 
-    plt.xlabel("Čas")
-    plt.ylabel("Koncentrace")
+    plt.xlabel("čas [s]")
+    plt.ylabel("koncentrace [-]")
 
     # Apply x-limit (xlim) like plot_debug
     try:

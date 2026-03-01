@@ -65,7 +65,9 @@ async def export_all_figures_as_zip(plotters: dict,
         out = BytesIO()
         with zipfile.ZipFile(out, mode='w', compression=zipfile.ZIP_DEFLATED) as zipf:
             for name, plotter in plotters.items():
-                fig = plotter.plot(**asdict(configs[plotter.name]), ui=True)
+                cfg = configs[plotter.name]
+                kwargs = cfg.to_kwargs() if hasattr(cfg, 'to_kwargs') else asdict(cfg)
+                fig = plotter.plot(ui=True, **kwargs)
                 img_buf = BytesIO()
                 fig.savefig(img_buf, format=save_format, bbox_inches='tight')
                 plt.close(fig)

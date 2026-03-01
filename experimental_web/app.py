@@ -4,6 +4,13 @@ import argparse
 import os
 import sys
 
+from experimental_web.core.config import APP_NAME
+from experimental_web.core.paths import APP_DIR
+
+# Store NiceGUI's persistence files (e.g. storage-*.json) next to the database.
+# Users can still override this by explicitly setting NICEGUI_STORAGE_PATH.
+os.environ.setdefault('NICEGUI_STORAGE_PATH', str(APP_DIR))
+
 from nicegui import ui
 
 from experimental_web.core.app_init import init_app
@@ -43,7 +50,7 @@ setup_logging(debug_level)
 init_app()
 
 ui.run(
-    title='Experiment Manager',
+    title=APP_NAME.replace('_', ' '),
     reload=False,
     storage_secret=get_storage_secret(),
 )

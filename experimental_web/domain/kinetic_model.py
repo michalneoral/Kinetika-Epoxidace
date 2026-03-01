@@ -557,8 +557,8 @@ class KineticModel:
         elif legend_mode == "components_only":
             ax.legend(handles=custom_lines, title=None)
 
-        plt.xlabel("Čas")
-        plt.ylabel("Koncentrace")
+        plt.xlabel("čas [s]")
+        plt.ylabel("koncentrace [-]")
 
         # Apply plot x-limit (xlim) if requested (used by processing tab setting t_max_plot).
         try:

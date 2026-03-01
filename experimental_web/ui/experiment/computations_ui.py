@@ -463,10 +463,17 @@ Kontrolní hrany se počítají separátně a při vykreslení se mergeují podl
                 attach_tooltip(btn_save, "Uložit", """Uloží definici výpočtu do databáze.
 
 Po uložení se výpočet objeví v seznamu a bude zahrnut do hlavního běhu v Zpracování.""")
-                btn_preview = ui.button("Náhled", icon="show_chart").props("outline")
-                attach_tooltip(btn_preview, "Náhled", """Rychle spočítá fit a zobrazí graf ještě před uložením (ověření).
-
-Použije aktuální nastavení inicializace/t_shift z ProcessingConfig.""")
+                # NOTE: Tlačítko "Náhled" je dočasně vypnuté – v preview režimu se volalo
+                # jméno fit_graph_ode_model, které v aktuální verzi není definované.
+                # Pokud bude potřeba "Náhled" vrátit, odkomentujte následující řádky
+                # a opravte implementaci preview_fit.
+                # btn_preview = ui.button("Náhled", icon="show_chart").props("outline")
+                # attach_tooltip(
+                #     btn_preview,
+                #     "Náhled",
+                #     "Rychle spočítá fit a zobrazí graf ještě před uložením (ověření).\\n\\n"
+                #     "Použije aktuální nastavení inicializace/t_shift z ProcessingConfig.",
+                # )
                 btn_cancel = ui.button("Zrušit", on_click=dialog.close).props("flat")
                 attach_tooltip(btn_cancel, "Zrušit", """Zavře editor bez uložení změn.""")
 
@@ -703,7 +710,7 @@ Použije aktuální nastavení inicializace/t_shift z ProcessingConfig.""")
             btn_continue.on("click", load_columns_for_selected_table)
             btn_reload.on("click", load_columns_for_selected_table)
             btn_save.on("click", wrap_ui_handler('computations.save.click', save_and_close, level=20))
-            btn_preview.on("click", wrap_ui_handler('computations.preview.click', preview_fit, level=20))
+            # btn_preview.on("click", wrap_ui_handler(\'computations.preview.click\', preview_fit, level=20))
 
             table_select.on(
                 "update:model-value",

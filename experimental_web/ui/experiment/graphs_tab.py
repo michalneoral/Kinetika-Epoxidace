@@ -217,14 +217,108 @@ class CurveStyle:
 
 
 @dataclass
+class GridConfig:
+    """Config for Matplotlib grid (major/minor).
+
+    Stored in DB as plain dicts so the schema is forward/backward compatible.
+    """
+
+    # Show/hide this grid.
+    visible: bool = True
+
+    # Which axis to draw grid on: 'both' | 'x' | 'y'
+    axis: str = 'both'
+
+    # Quasar q-color uses the selected v-model format; we store it as a string (usually HEXA).
+    # Default tries to match Matplotlib's default grid color.
+    color: str = '#B0B0B0FF'
+
+    # Line appearance.
+    linestyle: str = '-'
+    linewidth: float = 0.8
+
+    # Major/minor (not editable in UI; controlled by which config this is).
+    which: str = 'major'
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            'visible': bool(self.visible),
+            'axis': str(self.axis or 'both'),
+            'color': str(self.color or ''),
+            'linestyle': str(self.linestyle or '-'),
+            'linewidth': float(self.linewidth) if self.linewidth is not None else None,
+            'which': str(self.which or 'major'),
+        }
+
+    @staticmethod
+    def from_dict(d: Any, *, default: Optional['GridConfig'] = None) -> 'GridConfig':
+        cfg = default if default is not None else GridConfig()
+        if not isinstance(d, dict):
+            return cfg
+        try:
+            cfg.visible = bool(d.get('visible', cfg.visible))
+        except Exception:
+            pass
+        cfg.axis = str(d.get('axis', cfg.axis) or cfg.axis)
+        cfg.color = str(d.get('color', cfg.color) or cfg.color)
+        cfg.linestyle = str(d.get('linestyle', cfg.linestyle) or cfg.linestyle)
+        try:
+            lw = d.get('linewidth', cfg.linewidth)
+            cfg.linewidth = float(lw) if lw is not None else cfg.linewidth
+        except Exception:
+            pass
+        cfg.which = str(d.get('which', cfg.which) or cfg.which)
+        return cfg
+
+    def to_matplotlib_kwargs(self) -> dict[str, Any]:
+        """Return kwargs for `Axes.grid(...)`.
+
+        We keep keys compatible with the legacy project:
+        - `visible` controls on/off
+        - `axis` controls which axis
+        - `which` is 'major'/'minor'
+        """
+        out: dict[str, Any] = {
+            'visible': bool(self.visible),
+            'axis': str(self.axis or 'both'),
+            'which': str(self.which or 'major'),
+        }
+        if self.color:
+            out['color'] = str(self.color)
+        if self.linestyle:
+            out['linestyle'] = str(self.linestyle)
+        if self.linewidth is not None:
+            try:
+                out['linewidth'] = float(self.linewidth)
+            except Exception:
+                pass
+        return out
+
+
+def _default_grid_major() -> GridConfig:
+    # Match Matplotlib defaults as closely as possible.
+    return GridConfig(visible=True, axis='both', color='#B0B0B0FF', linestyle='-', linewidth=0.8, which='major')
+
+
+def _default_grid_minor() -> GridConfig:
+    # Minor grid is off by default (same as legacy behavior).
+    return GridConfig(visible=False, axis='both', color='#B0B0B0FF', linestyle=':', linewidth=0.6, which='minor')
+
+@dataclass
 class GraphConfig:
     title: str = ''
     show_title: bool = True
     legend_mode: str = 'components_only'
     fig_width: float = 8.0
     fig_height: float = 6.0
-    xlabel: str = 'Čas'
-    ylabel: str = 'Koncentrace'
+    # Default axis labels (legacy project defaults)
+    xlabel: str = 'čas [s]'
+    ylabel: str = 'koncentrace [-]'
+
+    # Matplotlib artist clipping.
+    # True  -> current default behavior (artists are clipped to axes).
+    # False -> allow drawing outside the axes (over spines/labels), useful for markers/annotations.
+    clip_on: bool = True
     xlim_mode: str = 'manual'  # default/manual/auto/all_data/None
     xlim_min: Optional[float] = 0.0
     xlim_max: Optional[float] = 400.0
@@ -232,6 +326,9 @@ class GraphConfig:
     ylim_min: Optional[float] = 0.0
     ylim_max: Optional[float] = 1.0
     curve_styles: list[CurveStyle] = field(default_factory=list)
+
+    grid_config: GridConfig = field(default_factory=_default_grid_major)
+    grid_config_minor: GridConfig = field(default_factory=_default_grid_minor)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -242,6 +339,7 @@ class GraphConfig:
             'fig_height': float(self.fig_height),
             'xlabel': self.xlabel,
             'ylabel': self.ylabel,
+            'clip_on': bool(self.clip_on),
             'xlim_mode': self.xlim_mode,
             'xlim_min': self.xlim_min,
             'xlim_max': self.xlim_max,
@@ -249,6 +347,8 @@ class GraphConfig:
             'ylim_min': self.ylim_min,
             'ylim_max': self.ylim_max,
             'curve_styles': [c.to_dict() for c in (self.curve_styles or [])],
+            'grid_config': (self.grid_config.to_dict() if self.grid_config else _default_grid_major().to_dict()),
+            'grid_config_minor': (self.grid_config_minor.to_dict() if self.grid_config_minor else _default_grid_minor().to_dict()),
         }
 
     @staticmethod
@@ -264,6 +364,7 @@ class GraphConfig:
             pass
         cfg.xlabel = str(d.get('xlabel', cfg.xlabel) or cfg.xlabel)
         cfg.ylabel = str(d.get('ylabel', cfg.ylabel) or cfg.ylabel)
+        cfg.clip_on = bool(d.get('clip_on', cfg.clip_on))
         cfg.xlim_mode = str(d.get('xlim_mode', cfg.xlim_mode) or cfg.xlim_mode)
         cfg.ylim_mode = str(d.get('ylim_mode', cfg.ylim_mode) or cfg.ylim_mode)
         cfg.xlim_min = d.get('xlim_min', cfg.xlim_min)
@@ -277,6 +378,11 @@ class GraphConfig:
                 if isinstance(item, dict):
                     out_styles.append(CurveStyle.from_dict(item))
         cfg.curve_styles = out_styles
+        cfg.grid_config = GridConfig.from_dict(d.get('grid_config') or {}, default=_default_grid_major())
+        cfg.grid_config_minor = GridConfig.from_dict(d.get('grid_config_minor') or {}, default=_default_grid_minor())
+        # Ensure correct `which` values even if an older config stored wrong strings.
+        cfg.grid_config.which = 'major'
+        cfg.grid_config_minor.which = 'minor'
         return cfg
 
     def to_kwargs(self) -> dict[str, Any]:
@@ -288,6 +394,7 @@ class GraphConfig:
             'fig_height': self.fig_height,
             'xlabel': self.xlabel,
             'ylabel': self.ylabel,
+            'clip_on': bool(self.clip_on),
             'xlim_mode': self.xlim_mode,
             'xlim_min': self.xlim_min,
             'xlim_max': self.xlim_max,
@@ -301,8 +408,8 @@ class GraphConfig:
                 }
                 for c in (self.curve_styles or [])
             ],
-            'grid_config': {'visible': True},
-            'grid_config_minor': {'visible': False},
+            'grid_config': (self.grid_config.to_matplotlib_kwargs() if self.grid_config else _default_grid_major().to_matplotlib_kwargs()),
+            'grid_config_minor': (self.grid_config_minor.to_matplotlib_kwargs() if self.grid_config_minor else _default_grid_minor().to_matplotlib_kwargs()),
         }
 
 
@@ -1700,6 +1807,27 @@ def _render_controls_for(
     with ui.tab_panels(tabs, value='graph').classes('w-full'):
         # --- Global graph settings ---
         with ui.tab_panel('graph'):
+            def _set_enabled(el: Any, enabled: bool) -> None:
+                """Best-effort enable/disable across NiceGUI versions."""
+                try:
+                    if hasattr(el, 'set_enabled'):
+                        el.set_enabled(bool(enabled))
+                        return
+                except Exception:
+                    pass
+                try:
+                    if bool(enabled):
+                        el.enable()
+                    else:
+                        el.disable()
+                    return
+                except Exception:
+                    pass
+                try:
+                    el.enabled = bool(enabled)
+                except Exception:
+                    pass
+
             with ui.row().classes('w-full flex-wrap gap-3 items-center'):
                 show_title = ui.switch('Nadpis', value=cfg.show_title,
                                        on_change=lambda e: (setattr(cfg, 'show_title', bool(e.value)), replot()))
@@ -1718,6 +1846,20 @@ def _render_controls_for(
                     'Použije se také jako název při exportu (pokud exportní formát podporuje metadatový titulek).',
                 )
                 title.bind_enabled_from(show_title, 'value')
+
+            with ui.row().classes('w-full flex-wrap gap-3 items-center'):
+                sw_clip = ui.switch(
+                    'Ořez (clip_on)',
+                    value=bool(getattr(cfg, 'clip_on', True)),
+                    on_change=lambda e: (setattr(cfg, 'clip_on', bool(e.value)), replot()),
+                )
+                attach_tooltip(
+                    sw_clip,
+                    'Ořez (clip_on)',
+                    'Určuje, zda se křivky/markery/anotace ořezávají na oblast os.\n\n'
+                    '*Zapnuto* (default): standardní chování matplotlib – vše je oříznuté do os.\n'
+                    '*Vypnuto*: prvky se mohou vykreslit i mimo osy (např. přes spiny), což se hodí pro vizuální zvýraznění.',
+                )
 
             with ui.row().classes('w-full flex-wrap gap-3 items-center'):
                 sel_leg = ui.select(
@@ -1739,6 +1881,87 @@ def _render_controls_for(
                           on_change=lambda e: (setattr(cfg, 'fig_height', float(e.value)), replot())).classes('w-40')
                 attach_tooltip(num_h, 'Výška', 'Výška výsledné figury (v palcích).\n\nPoužívá se i pro export.')
 
+
+            
+            # --- Grid (major/minor) ---
+            ui.label('Mřížka').classes('text-subtitle2 text-grey-8')
+
+            with ui.row().classes('w-full flex-wrap gap-3 items-center'):
+                picker_g = ColorPickerButton(
+                    icon='colorize',
+                    color=cfg.grid_config.color,
+                    color_type='hexa',
+                    on_pick=lambda e: replot(),
+                )
+                picker_g.bind_color(cfg.grid_config, 'color')
+                attach_tooltip(
+                    picker_g,
+                    'Barva hlavní mřížky',
+                    'Barva hlavní (major) mřížky.\n\n'
+                    'Můžete použít i průhlednost (alpha) – vybírá se přímo v pickeru.',
+                )
+
+                sw_g = ui.switch(
+                    'Hlavní mřížka',
+                    value=bool(cfg.grid_config.visible),
+                    on_change=lambda e: (setattr(cfg.grid_config, 'visible', bool(e.value)), replot()),
+                )
+                attach_tooltip(
+                    sw_g,
+                    'Hlavní mřížka',
+                    'Zapne/vypne hlavní (major) mřížku v grafu.',
+                )
+
+                sel_g_axis = ui.select(
+                    label='Osy (major)',
+                    options=['both', 'x', 'y'],
+                    value=str(cfg.grid_config.axis or 'both'),
+                    on_change=lambda e: (setattr(cfg.grid_config, 'axis', str(e.value)), replot()),
+                ).classes('w-32')
+                attach_tooltip(
+                    sel_g_axis,
+                    'Osy mřížky',
+                    'Určuje, zda se mřížka vykreslí pro obě osy, nebo jen pro X/Y.',
+                )
+
+            with ui.row().classes('w-full flex-wrap gap-3 items-center'):
+                picker_m = ColorPickerButton(
+                    icon='colorize',
+                    color=cfg.grid_config_minor.color,
+                    color_type='hexa',
+                    on_pick=lambda e: replot(),
+                )
+                picker_m.bind_color(cfg.grid_config_minor, 'color')
+                attach_tooltip(
+                    picker_m,
+                    'Barva vedlejší mřížky',
+                    'Barva vedlejší (minor) mřížky.\n\n'
+                    'Pozor: aby šla minor mřížka vykreslit, zapínají se i minor ticks.',
+                )
+
+                sw_m = ui.switch(
+                    'Vedlejší mřížka',
+                    value=bool(cfg.grid_config_minor.visible),
+                    on_change=lambda e: (setattr(cfg.grid_config_minor, 'visible', bool(e.value)), replot()),
+                )
+                attach_tooltip(
+                    sw_m,
+                    'Vedlejší mřížka',
+                    'Zapne/vypne vedlejší (minor) mřížku v grafu.',
+                )
+
+                sel_m_axis = ui.select(
+                    label='Osy (minor)',
+                    options=['both', 'x', 'y'],
+                    value=str(cfg.grid_config_minor.axis or 'both'),
+                    on_change=lambda e: (setattr(cfg.grid_config_minor, 'axis', str(e.value)), replot()),
+                ).classes('w-32')
+                attach_tooltip(
+                    sel_m_axis,
+                    'Osy mřížky',
+                    'Určuje, zda se minor mřížka vykreslí pro obě osy, nebo jen pro X/Y.',
+                )
+
             with ui.row().classes('w-full flex-wrap gap-3 items-center'):
                 inp_xl = ui.input('Popisek osy X', value=cfg.xlabel,
                          on_change=lambda e: (setattr(cfg, 'xlabel', str(e.value)), replot())).classes('w-56')
@@ -1748,11 +1971,19 @@ def _render_controls_for(
                 attach_tooltip(inp_yl, 'Osa Y', 'Popisek osy Y (koncentrace apod.).')
 
             with ui.row().classes('w-full flex-wrap gap-3 items-center'):
+                def _sync_x_manual() -> None:
+                    manual = str(getattr(cfg, 'xlim_mode', '')) == 'manual'
+                    try:
+                        _set_enabled(num_xmin, manual)
+                        _set_enabled(num_xmax, manual)
+                    except Exception:
+                        pass
+
                 sel_x = ui.select(
                     label='Osa X',
                     options=['default', 'auto', 'all_data', 'manual', 'None'],
                     value=cfg.xlim_mode,
-                    on_change=lambda e: (setattr(cfg, 'xlim_mode', str(e.value)), replot()),
+                    on_change=lambda e: (setattr(cfg, 'xlim_mode', str(e.value)), _sync_x_manual(), replot()),
                 ).classes('w-40')
                 attach_tooltip(
                     sel_x,
@@ -1762,17 +1993,40 @@ def _render_controls_for(
                 )
                 num_xmin = ui.number('X min', value=cfg.xlim_min or 0.0, min=0, step=1.0,
                           on_change=lambda e: (setattr(cfg, 'xlim_min', float(e.value)), replot())).classes('w-32')
-                attach_tooltip(num_xmin, 'X min', 'Spodní mez osy X (jen pro manual).')
+                attach_tooltip(
+                    num_xmin,
+                    'X min',
+                    'Spodní mez osy X.\n\n'
+                    'Pole je aktivní pouze když je režim osy X nastaven na *manual*.\n'
+                    'V ostatních režimech se rozsah určuje automaticky a ruční hodnoty se ignorují.',
+                )
                 num_xmax = ui.number('X max', value=cfg.xlim_max or 0.0, min=0, step=1.0,
                           on_change=lambda e: (setattr(cfg, 'xlim_max', float(e.value)), replot())).classes('w-32')
-                attach_tooltip(num_xmax, 'X max', 'Horní mez osy X (jen pro manual).')
+                attach_tooltip(
+                    num_xmax,
+                    'X max',
+                    'Horní mez osy X.\n\n'
+                    'Pole je aktivní pouze když je režim osy X nastaven na *manual*.\n'
+                    'V ostatních režimech se rozsah určuje automaticky a ruční hodnoty se ignorují.',
+                )
+
+                # Ensure the disabled/enabled state matches the current mode immediately.
+                _sync_x_manual()
 
             with ui.row().classes('w-full flex-wrap gap-3 items-center'):
+                def _sync_y_manual() -> None:
+                    manual = str(getattr(cfg, 'ylim_mode', '')) == 'manual'
+                    try:
+                        _set_enabled(num_ymin, manual)
+                        _set_enabled(num_ymax, manual)
+                    except Exception:
+                        pass
+
                 sel_y = ui.select(
                     label='Osa Y',
                     options=['default', 'manual', 'None'],
                     value=cfg.ylim_mode,
-                    on_change=lambda e: (setattr(cfg, 'ylim_mode', str(e.value)), replot()),
+                    on_change=lambda e: (setattr(cfg, 'ylim_mode', str(e.value)), _sync_y_manual(), replot()),
                 ).classes('w-40')
                 attach_tooltip(
                     sel_y,
@@ -1782,10 +2036,24 @@ def _render_controls_for(
                 )
                 num_ymin = ui.number('Y min', value=cfg.ylim_min or 0.0, min=0, step=0.05,
                           on_change=lambda e: (setattr(cfg, 'ylim_min', float(e.value)), replot())).classes('w-32')
-                attach_tooltip(num_ymin, 'Y min', 'Spodní mez osy Y (jen pro manual).')
+                attach_tooltip(
+                    num_ymin,
+                    'Y min',
+                    'Spodní mez osy Y.\n\n'
+                    'Pole je aktivní pouze když je režim osy Y nastaven na *manual*.\n'
+                    'V ostatních režimech se rozsah určuje automaticky a ruční hodnoty se ignorují.',
+                )
                 num_ymax = ui.number('Y max', value=cfg.ylim_max or 1.0, min=0, step=0.05,
                           on_change=lambda e: (setattr(cfg, 'ylim_max', float(e.value)), replot())).classes('w-32')
-                attach_tooltip(num_ymax, 'Y max', 'Horní mez osy Y (jen pro manual).')
+                attach_tooltip(
+                    num_ymax,
+                    'Y max',
+                    'Horní mez osy Y.\n\n'
+                    'Pole je aktivní pouze když je režim osy Y nastaven na *manual*.\n'
+                    'V ostatních režimech se rozsah určuje automaticky a ruční hodnoty se ignorují.',
+                )
+
+                _sync_y_manual()
 
         # --- Per-curve settings ---
         for idx, cs in enumerate(cfg.curve_styles):
