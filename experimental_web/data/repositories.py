@@ -175,16 +175,34 @@ class MetaRepository:
         return int(row["value"]) if row and str(row["value"]).isdigit() else None
 
     def set_last_experiment_id(self, exp_id: int) -> None:
+        """Persist last selected experiment id.
+
+        The DB schema evolved over time; some installations have `updated_at`,
+        others only `created_at` or no timestamp column at all. We therefore
+        detect available columns and generate a compatible UPSERT.
+        """
         now = utc_now_iso()
         with self.db.connect() as con:
-            con.execute(
-                """
-                INSERT INTO app_meta(key, value, updated_at)
+            # Detect optional timestamp columns (backward compatible)
+            cols = [row["name"] for row in con.execute("PRAGMA table_info(app_meta)").fetchall()]
+            ts_col = "updated_at" if "updated_at" in cols else ("created_at" if "created_at" in cols else None)
+
+            if ts_col:
+                sql = f"""
+                INSERT INTO app_meta(key, value, {ts_col})
                 VALUES('last_experiment_id', ?, ?)
-                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-                """,
-                (str(exp_id), now),
-            )
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value, {ts_col}=excluded.{ts_col}
+                """
+                con.execute(sql, (str(exp_id), now))
+            else:
+                con.execute(
+                    """
+                    INSERT INTO app_meta(key, value)
+                    VALUES('last_experiment_id', ?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                    """,
+                    (str(exp_id),),
+                )
             con.commit()
 
 
@@ -228,12 +246,19 @@ class ExperimentFileRepository:
     def get_single_for_experiment(self, experiment_id: int) -> Optional[ExperimentFile]:
         """Return the newest stored file for an experiment (or None)."""
         with self.db.connect() as con:
+            cols = {r[1] for r in con.execute("PRAGMA table_info(experiment_files)").fetchall()}
+            has_uploaded_at = "uploaded_at" in cols
+            has_selected_sheet = "selected_sheet" in cols
+            uploaded_expr = "uploaded_at" if has_uploaded_at else ("created_at" if "created_at" in cols else "id")
+            selected_expr = "selected_sheet" if has_selected_sheet else "NULL as selected_sheet"
             row = con.execute(
-                """
-                SELECT id, experiment_id, filename, content, sha256, size_bytes, uploaded_at, selected_sheet
+                f"""
+                SELECT id, experiment_id, filename, content, sha256, size_bytes,
+                       {uploaded_expr} as uploaded_at,
+                       {selected_expr}
                 FROM experiment_files
                 WHERE experiment_id=?
-                ORDER BY uploaded_at DESC
+                ORDER BY {uploaded_expr} DESC
                 LIMIT 1
                 """,
                 (experiment_id,),
@@ -251,13 +276,33 @@ class ExperimentFileRepository:
         size = len(content)
 
         with self.db.connect() as con:
-            cur = con.execute(
-                """
-                INSERT INTO experiment_files(experiment_id, filename, content, sha256, size_bytes, uploaded_at, selected_sheet)
-                VALUES(?, ?, ?, ?, ?, ?, NULL)
-                """,
-                (experiment_id, filename, sqlite3.Binary(content), sha, size, now),
-            )
+            cols = {r[1] for r in con.execute("PRAGMA table_info(experiment_files)").fetchall()}
+            has_uploaded_at = "uploaded_at" in cols
+            has_selected_sheet = "selected_sheet" in cols
+            if has_uploaded_at and has_selected_sheet:
+                cur = con.execute(
+                    """
+                    INSERT INTO experiment_files(experiment_id, filename, content, sha256, size_bytes, uploaded_at, selected_sheet)
+                    VALUES(?, ?, ?, ?, ?, ?, NULL)
+                    """,
+                    (experiment_id, filename, sqlite3.Binary(content), sha, size, now),
+                )
+            elif has_uploaded_at:
+                cur = con.execute(
+                    """
+                    INSERT INTO experiment_files(experiment_id, filename, content, sha256, size_bytes, uploaded_at)
+                    VALUES(?, ?, ?, ?, ?, ?)
+                    """,
+                    (experiment_id, filename, sqlite3.Binary(content), sha, size, now),
+                )
+            else:
+                cur = con.execute(
+                    """
+                    INSERT INTO experiment_files(experiment_id, filename, content, sha256, size_bytes)
+                    VALUES(?, ?, ?, ?, ?)
+                    """,
+                    (experiment_id, filename, sqlite3.Binary(content), sha, size),
+                )
             file_id = int(cur.lastrowid)
             con.commit()
 
@@ -267,12 +312,19 @@ class ExperimentFileRepository:
 
     def list_for_experiment(self, experiment_id: int) -> List[ExperimentFile]:
         with self.db.connect() as con:
+            cols = {r[1] for r in con.execute("PRAGMA table_info(experiment_files)").fetchall()}
+            has_uploaded_at = "uploaded_at" in cols
+            has_selected_sheet = "selected_sheet" in cols
+            uploaded_expr = "uploaded_at" if has_uploaded_at else ("created_at" if "created_at" in cols else "id")
+            selected_expr = "selected_sheet" if has_selected_sheet else "NULL as selected_sheet"
             rows = con.execute(
-                """
-                SELECT id, experiment_id, filename, content, sha256, size_bytes, uploaded_at, selected_sheet
+                f"""
+                SELECT id, experiment_id, filename, content, sha256, size_bytes,
+                       {uploaded_expr} as uploaded_at,
+                       {selected_expr}
                 FROM experiment_files
                 WHERE experiment_id=?
-                ORDER BY uploaded_at DESC
+                ORDER BY {uploaded_expr} DESC
                 """,
                 (experiment_id,),
             ).fetchall()
@@ -280,9 +332,16 @@ class ExperimentFileRepository:
 
     def get(self, file_id: int) -> Optional[ExperimentFile]:
         with self.db.connect() as con:
+            cols = {r[1] for r in con.execute("PRAGMA table_info(experiment_files)").fetchall()}
+            has_uploaded_at = "uploaded_at" in cols
+            has_selected_sheet = "selected_sheet" in cols
+            uploaded_expr = "uploaded_at" if has_uploaded_at else ("created_at" if "created_at" in cols else "id")
+            selected_expr = "selected_sheet" if has_selected_sheet else "NULL as selected_sheet"
             row = con.execute(
-                """
-                SELECT id, experiment_id, filename, content, sha256, size_bytes, uploaded_at, selected_sheet
+                f"""
+                SELECT id, experiment_id, filename, content, sha256, size_bytes,
+                       {uploaded_expr} as uploaded_at,
+                       {selected_expr}
                 FROM experiment_files
                 WHERE id=?
                 """,
@@ -292,8 +351,10 @@ class ExperimentFileRepository:
 
     def set_selected_sheet(self, file_id: int, sheet: Optional[str]) -> None:
         with self.db.connect() as con:
-            con.execute("UPDATE experiment_files SET selected_sheet=? WHERE id=?", (sheet, file_id))
-            con.commit()
+            cols = {r[1] for r in con.execute("PRAGMA table_info(experiment_files)").fetchall()}
+            if "selected_sheet" in cols:
+                con.execute("UPDATE experiment_files SET selected_sheet=? WHERE id=?", (sheet, file_id))
+                con.commit()
 
     def delete(self, file_id: int) -> None:
         with self.db.connect() as con:
@@ -337,9 +398,22 @@ class TablePickRepository:
         self.db.ensure_schema()
 
     def get(self, experiment_id: int, kind: str):
+        """Return stored pick range for an experiment.
+
+        Always returns row_start/row_end/col_start/col_end.
+        When available in schema, also includes created_at/updated_at.
+        """
         with self.db.connect() as con:
+            cols = {r[1] for r in con.execute("PRAGMA table_info(experiment_table_picks)").fetchall()}
+            extra_cols = []
+            if "created_at" in cols:
+                extra_cols.append("created_at")
+            if "updated_at" in cols:
+                extra_cols.append("updated_at")
+
+            extra_sql = (", " + ", ".join(extra_cols)) if extra_cols else ""
             row = con.execute(
-                """SELECT row_start, row_end, col_start, col_end
+                f"""SELECT row_start, row_end, col_start, col_end{extra_sql}
                      FROM experiment_table_picks
                      WHERE experiment_id=? AND kind=?""",
                 (experiment_id, kind),
@@ -349,6 +423,8 @@ class TablePickRepository:
     def set(self, experiment_id: int, kind: str, row_start: int, row_end: int, col_start: int, col_end: int) -> None:
         now = utc_now_iso()
         with self.db.connect() as con:
+            # Avoid bumping updated_at (and triggering false "Změněno") when the
+            # range is identical to the stored one.
             con.execute(
                 """INSERT INTO experiment_table_picks(experiment_id, kind, row_start, row_end, col_start, col_end, updated_at)
                      VALUES(?, ?, ?, ?, ?, ?, ?)
@@ -357,7 +433,11 @@ class TablePickRepository:
                                    row_end=excluded.row_end,
                                    col_start=excluded.col_start,
                                    col_end=excluded.col_end,
-                                   updated_at=excluded.updated_at""",
+                                   updated_at=excluded.updated_at
+                     WHERE row_start!=excluded.row_start
+                        OR row_end!=excluded.row_end
+                        OR col_start!=excluded.col_start
+                        OR col_end!=excluded.col_end""",
                 (experiment_id, kind, row_start, row_end, col_start, col_end, now),
             )
             con.commit()
@@ -376,7 +456,8 @@ class ProcessedTablesRepository:
     def list_names(self, experiment_id: int, cache_key: str) -> List[str]:
         with self.db.connect() as con:
             rows = con.execute(
-                "SELECT name FROM experiment_processed_tables WHERE experiment_id=? AND cache_key=? ORDER BY name",
+                # DB schema uses `table_name`; keep API stable by aliasing to `name`
+                "SELECT table_name AS name FROM experiment_processed_tables WHERE experiment_id=? AND cache_key=? ORDER BY table_name",
                 (experiment_id, cache_key),
             ).fetchall()
         return [r["name"] for r in rows]
@@ -385,7 +466,7 @@ class ProcessedTablesRepository:
         with self.db.connect() as con:
             rows = con.execute(
                 """
-                SELECT name, df_json, text_md
+                SELECT table_name AS name, df_json, text_md
                 FROM experiment_processed_tables
                 WHERE experiment_id=? AND cache_key=?
                 """,
@@ -404,15 +485,15 @@ class ProcessedTablesRepository:
         with self.db.connect() as con:
             rows = con.execute(
                 """
-                SELECT t.name, t.df_json, t.text_md
+                SELECT t.table_name AS name, t.df_json, t.text_md
                 FROM experiment_processed_tables t
                 JOIN (
-                    SELECT name, MAX(updated_at) AS mx
+                    SELECT table_name, MAX(updated_at) AS mx
                     FROM experiment_processed_tables
                     WHERE experiment_id = ?
-                    GROUP BY name
+                    GROUP BY table_name
                 ) latest
-                ON latest.name = t.name AND latest.mx = t.updated_at
+                ON latest.table_name = t.table_name AND latest.mx = t.updated_at
                 WHERE t.experiment_id = ?
                 """,
                 (experiment_id, experiment_id),
@@ -422,13 +503,25 @@ class ProcessedTablesRepository:
     def save_table(self, experiment_id: int, cache_key: str, name: str, df_json: str, text_md: str = "") -> None:
         """Upsert one processed table snapshot into DB."""
         with self.db.connect() as con:
-            con.execute(
-                """
-                INSERT OR REPLACE INTO experiment_processed_tables(experiment_id, cache_key, name, df_json, text_md, updated_at)
-                VALUES(?,?,?,?,?, datetime('now'))
-                """,
-                (experiment_id, cache_key, name, df_json, text_md),
-            )
+            # DB schema uses `table_name` (older buggy code used `name`).
+            cols = {r[1] for r in con.execute("PRAGMA table_info(experiment_processed_tables)").fetchall()}
+            col_table = "name" if "name" in cols else "table_name"
+            has_updated_at = "updated_at" in cols
+
+            if has_updated_at:
+                sql = (
+                    f"INSERT OR REPLACE INTO experiment_processed_tables("
+                    f"experiment_id, cache_key, {col_table}, df_json, text_md, updated_at) "
+                    f"VALUES(?,?,?,?,?, datetime('now'))"
+                )
+            else:
+                # extremely old schemas
+                sql = (
+                    f"INSERT OR REPLACE INTO experiment_processed_tables("
+                    f"experiment_id, cache_key, {col_table}, df_json, text_md) "
+                    f"VALUES(?,?,?,?,?)"
+                )
+            con.execute(sql, (experiment_id, cache_key, name, df_json, text_md))
             con.commit()
     
 # -------------------------

@@ -102,7 +102,7 @@ def render_load_data_tab(experiment_id: int) -> None:
 
             table_box = ui.column().classes("w-full gap-2")
 
-            def update() -> None:
+            def update(*, save: bool) -> None:
                 try:
                     rr1=int(rs.value); rr2=int(re_.value); cc1=int(cs.value); cc2=int(ce.value)
                 except Exception:
@@ -110,8 +110,11 @@ def render_load_data_tab(experiment_id: int) -> None:
                 if rr1<1 or cc1<1 or rr2<rr1 or cc2<cc1:
                     status.set("Rozsah není platný.", "warning"); table_box.clear(); return
 
-                pick_repo.set(experiment_id, kind, rr1, rr2, cc1, cc2)
-                st.data_version += 1
+                # IMPORTANT: Do not write to DB on initial render.
+                # Persist only when the user actually changes something.
+                if save:
+                    pick_repo.set(experiment_id, kind, rr1, rr2, cc1, cc2)
+                    st.data_version += 1
 
                 df = extract_df(df_raw, rr1, rr2, cc1, cc2)
                 if df.empty:
@@ -129,8 +132,9 @@ def render_load_data_tab(experiment_id: int) -> None:
                     StickyTable.from_rows_and_columns(rows=rows, columns=cols, sticky="both", max_height="420px").classes("w-full")
 
             for ctrl in (rs,re_,cs,ce):
-                ctrl.on("update:model-value", lambda e: update())
-            update()
+                ctrl.on("update:model-value", lambda e: update(save=True))
+            # Initial preview only (no DB write, no version bump)
+            update(save=False)
 
     def render_all() -> None:
         dynamic.clear()

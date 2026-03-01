@@ -162,12 +162,30 @@ def ensure_schema(db: Database) -> None:
                 sha256 TEXT NOT NULL,
                 size_bytes INTEGER NOT NULL,
                 content BLOB NOT NULL,
+                uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                selected_sheet TEXT DEFAULT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
             )
             """
         )
+
+        # --- lightweight migrations for older DBs ---
+        def _cols(table: str) -> set[str]:
+            return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+        # experiment_files: older schemas missed uploaded_at/selected_sheet
+        cols = _cols("experiment_files")
+        if "uploaded_at" not in cols:
+            conn.execute("ALTER TABLE experiment_files ADD COLUMN uploaded_at TEXT")
+            # best effort backfill
+            try:
+                conn.execute("UPDATE experiment_files SET uploaded_at=created_at WHERE uploaded_at IS NULL")
+            except sqlite3.OperationalError:
+                pass
+        if "selected_sheet" not in cols:
+            conn.execute("ALTER TABLE experiment_files ADD COLUMN selected_sheet TEXT")
 
         # legacy processed tables cache (kept)
         conn.execute(
@@ -182,6 +200,25 @@ def ensure_schema(db: Database) -> None:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(experiment_id, cache_key, table_name),
+                FOREIGN KEY(experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
+            )
+            """
+        )
+
+        # --- table picks (ranges selected in UI for derived tables) ---
+        # Needed by load_data_tab.py + tables_tab.py via TablePickRepository.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS experiment_table_picks (
+                experiment_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                row_start INTEGER NOT NULL,
+                row_end INTEGER NOT NULL,
+                col_start INTEGER NOT NULL,
+                col_end INTEGER NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (experiment_id, kind),
                 FOREIGN KEY(experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
             )
             """

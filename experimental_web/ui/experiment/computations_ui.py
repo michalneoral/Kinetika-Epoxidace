@@ -38,6 +38,10 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
 
     params = params or ProcessingConfig()
 
+    # Session state is used to trigger lightweight refreshes when other tabs
+    # (or background computations) update persisted data.
+    st = get_state()
+
     repo = ExperimentComputationRepository(DB_PATH)
     tables_repo = ProcessedTablesRepository(DB_PATH)
 
@@ -52,7 +56,6 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
 </style>
 ''')
 
-    saved_container = ui.column().classes("w-full gap-2")
     delete_dialog = ui.dialog()
     dialog = ui.dialog().props("maximized")
     ode_dialog = ui.dialog()
@@ -84,11 +87,17 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
         # but would still be saved and used for ODE generation, leading to extra constants).
         normalize_graph_state(st)
 
+    @ui.refreshable
     def render_saved() -> None:
-        saved_container.clear()
+        """Render list of saved computations.
+
+        Important: must stay refreshable so that "Změněno" badges disappear immediately
+        after a new run is computed (without requiring a full page reload).
+        """
         items = repo.list_for_experiment(experiment_id)
         _run, stale = compute_staleness(experiment_id)
-        with saved_container:
+
+        with ui.column().classes("w-full gap-2"):
             ui.label("Uložené výpočty/grafy").classes("text-h6")
             if not items:
                 ui.label("Zatím nic uloženého.").classes("text-grey-7")
@@ -165,7 +174,7 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
         except Exception:
             pass
         delete_dialog.close()
-        render_saved()
+        render_saved.refresh()
         ui.notify("Smazáno.", type="positive")
 
     def open_ode_dialog() -> None:
@@ -181,9 +190,28 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
             else:
                 for s in items:
                     ui.label(f"{s.name} (tabulka: {s.table_name})").classes("text-subtitle1")
-                    # Prefer the persisted ODE text (generated on save). Fallback to regeneration.
-                    text = s.ode_text or generate_odes_model(s.graph_state).ode_text
-                    ui.textarea(value=text).props("readonly autogrow").classes("w-full font-mono text-xs")
+                    # Show ODEs for BOTH computations:
+                    # - main computation: mode=1 (persisted on save as s.ode_text)
+                    # - control computation: mode=2 (generated on demand)
+                    main_text = s.ode_text or generate_odes_model(s.graph_state, include_modes=(1,)).ode_text
+
+                    try:
+                        edge_modes = dict(getattr(s.graph_state, 'edge_modes', {}) or {})
+                        has_control = any(int(m) == 2 for m in edge_modes.values())
+                    except Exception:
+                        has_control = False
+
+                    ui.label("Hlavní výpočet").classes("text-caption text-grey-7")
+                    ui.textarea(value=main_text).props("readonly autogrow").classes("w-full font-mono text-xs")
+
+                    ui.label("Kontrolní výpočet").classes("text-caption text-grey-7")
+                    if has_control:
+                        ctrl_text = generate_odes_model(s.graph_state, include_modes=(2,)).ode_text
+                        ui.textarea(value=ctrl_text).props("readonly autogrow").classes("w-full font-mono text-xs")
+                    else:
+                        ui.textarea(value="# (žádné kontrolní hrany)\n").props("readonly autogrow").classes(
+                            "w-full font-mono text-xs"
+                        )
                     ui.separator()
 
             with ui.row().classes("w-full justify-end"):
@@ -196,14 +224,8 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
 
         item = repo.list_for_experiment(experiment_id)[index]
         log.info('[UI] computations.open_fit_dialog: id=%s name=%s table=%s used=%s', item.id, item.name, item.table_name, len(item.used_heads or []))
-        if not item.ode_text:
-            ui.notify("Nejdřív ulož výpočet (chybí ODE rovnice).", type="warning")
-            return
         if not item.used_heads:
             ui.notify("Nejsou vybrána použitá data.", type="warning")
-            return
-        if not item.state_names or not item.param_names:
-            ui.notify("Chybí state/param names – ulož výpočet znovu.", type="warning")
             return
 
         dlg = ui.dialog().props("maximized")
@@ -222,7 +244,7 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
             import pandas as pd
 
             from experimental_web.data.repositories import ProcessedTablesRepository
-            from experimental_web.domain.graph_model_fit import fit_graph_ode_model
+            from experimental_web.domain.graph_model_fit import fit_graph_ode_model_split
 
             try:
                 tables_repo = ProcessedTablesRepository(DB_PATH)
@@ -254,12 +276,10 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
                     bool(params.optim_time_shift),
                 )
                 res = await run.cpu_bound(
-                    fit_graph_ode_model,
+                    fit_graph_ode_model_split,
                     df,
                     item.used_heads,
-                    item.ode_text,
-                    item.state_names,
-                    item.param_names,
+                    item.graph_state,
                     initialization=params.initialization.name,
                     t_shift=float(params.t_shift),
                     optim_time_shift=bool(params.optim_time_shift),
@@ -487,12 +507,11 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
 
                 # Bump graphs version so the graphs tab can refresh immediately.
                 try:
-                    st = get_state()
                     st.graphs_version = st.graphs_version + 1
                 except Exception:
                     pass
 
-                render_saved()
+                render_saved.refresh()
                 dialog.close()
 
             def preview_fit() -> None:
@@ -526,7 +545,7 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
                         bool(params.optim_time_shift),
                     )
 
-                    from experimental_web.domain.graph_model_fit import fit_graph_ode_model
+                    from experimental_web.domain.graph_model_fit import fit_graph_ode_model_split
 
                     ode_model = generate_odes_model(graph_state)
                     res = fit_graph_ode_model(
@@ -579,4 +598,23 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
             on_click=wrap_ui_handler('computations.show_odes.click', open_ode_dialog, level=20),
         ).props("outline")
 
+    # Initial render
     render_saved()
+
+    # Keep the list in sync with other parts of the UI.
+    # - st.data_version changes when the user changes input data / pick ranges
+    # - st.graphs_version changes when a new run is computed (processing tab)
+    last_seen_data = st.data_version
+    last_seen_graphs = st.graphs_version
+
+    def _tick_refresh_saved() -> None:
+        nonlocal last_seen_data, last_seen_graphs
+        try:
+            if st.data_version != last_seen_data or st.graphs_version != last_seen_graphs:
+                last_seen_data = st.data_version
+                last_seen_graphs = st.graphs_version
+                render_saved.refresh()
+        except Exception:
+            pass
+
+    ui.timer(1.0, _tick_refresh_saved)

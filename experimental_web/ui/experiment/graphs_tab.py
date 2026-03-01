@@ -22,6 +22,7 @@ from experimental_web.data.repositories import (
 from experimental_web.domain.advanced_plotting import AdvancedPlotter
 from experimental_web.domain.fame_epo import DEFAULT_EPO, DEFAULT_FAME, extract_df
 from experimental_web.domain.kinetic_model import InitConditions, KineticModel
+from experimental_web.domain.ode_generation import generate_ode_model
 from experimental_web.domain.ode_compiler import compile_ode_equations
 from experimental_web.domain.processing import TableProcessor
 from experimental_web.logging_setup import get_logger
@@ -33,26 +34,29 @@ from experimental_web.ui.utils.staleness import compute_staleness, is_model_stal
 
 log = get_logger(__name__)
 
-_GRAPHS_CSS_ADDED = False
-
-
 def _ensure_graphs_css() -> None:
     """Install small CSS helpers used by the graphs tab.
 
     - make the per-curve tab show a colored icon (without coloring the label)
     - allow many tabs without causing the whole page to scroll horizontally
     """
-    global _GRAPHS_CSS_ADDED
-    if _GRAPHS_CSS_ADDED:
-        return
-    _GRAPHS_CSS_ADDED = True
-    ui.add_css(
-        """
+    # NOTE:
+    # NiceGUI routes can trigger a full page reload in the browser while the
+    # server process keeps this module cached. A module-level "already added"
+    # flag would then incorrectly skip CSS injection after reopening an
+    # experiment, causing the colored markers to disappear.
+    #
+    # Therefore we inject idempotently per *browser document* via JS.
+
+    css = r"""
         /* Colored marker for curve tabs (without coloring the label text) */
+        /* Quasar sometimes wraps the label; target both label and content for robustness */
+        .curve-tab .q-tab__content,
         .curve-tab .q-tab__label {
             display: inline-flex;
             align-items: center;
         }
+        .curve-tab .q-tab__content::before,
         .curve-tab .q-tab__label::before {
             content: '';
             width: 12px;
@@ -93,6 +97,18 @@ def _ensure_graphs_css() -> None:
             white-space: nowrap;
         }
         """
+
+    ui.run_javascript(
+        """
+(() => {
+  const id = 'graphs-tab-style';
+  if (document.getElementById(id)) return;
+  const style = document.createElement('style');
+  style.id = id;
+  style.textContent = %s;
+  document.head.appendChild(style);
+})();
+""" % (repr(css),)
     )
 
 
@@ -334,6 +350,158 @@ def _values_from_constants(constants: list[dict]) -> list[float]:
             except Exception:
                 pass
         return out
+
+
+def _latex_for_graph_param(p: str) -> str:
+    """Mirror KineticModel.get_constants_with_names latex mapping for graph-defined params.
+
+    We intentionally duplicate the logic here so we can map persisted constants
+    (stored as latex strings) back onto param_names_override when recreating
+    models for the Graphs tab.
+    """
+    if not p:
+        return r"k"
+    if p.startswith("k_"):
+        rest = p[2:]
+        # k_um  -> U -> M
+        if len(rest) == 2 and rest.isalpha():
+            a, b = rest[0].upper(), rest[1].upper()
+            return r"k_{\mathrm{" + a + r"}\rightarrow \mathrm{" + b + r"}}"
+        parts = rest.split("_")
+        if len(parts) == 2 and all(parts):
+            a = parts[0].upper().replace("_", r"\_")
+            b = parts[1].upper().replace("_", r"\_")
+            return r"k_{\mathrm{" + a + r"}\rightarrow \mathrm{" + b + r"}}"
+        return r"k_{\mathrm{" + rest.replace("_", r"\_") + r"}}"
+    return r"k_{\mathrm{" + p.replace("_", r"\_") + r"}}"
+
+
+def _build_latex_value_map(constants: list[dict]) -> dict[str, float]:
+    """Build a latex->value map from persisted constants payload."""
+    out: dict[str, float] = {}
+    for c in list(constants or []):
+        try:
+            latex = str(c.get('latex') or '')
+            if not latex:
+                continue
+            out[latex] = float(c.get('value'))
+        except Exception:
+            continue
+    return out
+
+
+def _apply_constants_to_model_for_plot(model: 'KineticModel', constants: list[dict]) -> None:
+    """Apply persisted constants to a recreated model in a safe way.
+
+    For graph-defined models we map by param_names_override -> latex.
+    For legacy/prebuilt models we fall back to idx ordering.
+    """
+    if model is None:
+        return
+    try:
+        pnames = list(getattr(model, 'param_names_override', None) or [])
+    except Exception:
+        pnames = []
+    if pnames:
+        m = _build_latex_value_map(constants)
+        vals: list[float] = []
+        for p in pnames:
+            latex = _latex_for_graph_param(str(p))
+            if latex in m:
+                vals.append(float(m[latex]))
+            else:
+                vals.append(0.01)
+        try:
+            import numpy as np
+            model.k_fit = np.array(vals, dtype=float)
+        except Exception:
+            model.k_fit = vals
+        return
+
+    vals = _values_from_constants(constants)
+    if not vals:
+        return
+    try:
+        n_expected = 0
+        try:
+            consts = model.get_constants_with_names() or []
+            n_expected = len(list(consts))
+        except Exception:
+            n_expected = 0
+        if n_expected > 0:
+            vals = vals[:n_expected]
+    except Exception:
+        pass
+    try:
+        import numpy as np
+        model.k_fit = np.array(vals, dtype=float)
+    except Exception:
+        model.k_fit = vals
+
+
+class _MergedSimulationModel:
+    """Proxy which merges simulated curves from main+control models for AdvancedPlotter."""
+
+    def __init__(
+        self,
+        main: 'KineticModel',
+        control: 'KineticModel',
+        *,
+        main_active_columns: set[str] | None,
+        control_active_columns: set[str] | None,
+    ) -> None:
+        self._main = main
+        self._control = control
+        self._main_active = set(main_active_columns or [])
+        self._ctrl_active = set(control_active_columns or [])
+
+        # Attributes consumed by AdvancedPlotter.
+        self.column_names = getattr(main, 'column_names', [])
+        self.original_data = getattr(main, 'original_data', None)
+        self.time_exp = getattr(main, 'time_exp', None)
+        self.y_exp = getattr(main, 'y_exp', None)
+
+    def get_constants_with_names(self):
+        try:
+            return self._main.get_constants_with_names()
+        except Exception:
+            return None
+
+    def simulate(self, *, t_max=2000, time_points=2000):
+        sim_t, sim_y = self._main.simulate(t_max=t_max, time_points=time_points)
+        if self._control is None:
+            return sim_t, sim_y
+        try:
+            sim_t2, sim_y2 = self._control.simulate(t_max=t_max, time_points=time_points)
+        except Exception:
+            return sim_t, sim_y
+
+        try:
+            import numpy as np
+            sim_t_arr = np.asarray(sim_t, dtype=float)
+            sim_y_arr = np.asarray(sim_y, dtype=float)
+            sim_t2_arr = np.asarray(sim_t2, dtype=float)
+            sim_y2_arr = np.asarray(sim_y2, dtype=float)
+
+            if sim_t_arr.shape != sim_t2_arr.shape or np.max(np.abs(sim_t_arr - sim_t2_arr)) > 1e-9:
+                y2i = []
+                for i in range(sim_y2_arr.shape[0]):
+                    y2i.append(np.interp(sim_t_arr, sim_t2_arr, sim_y2_arr[i]))
+                sim_y2_arr = np.asarray(y2i, dtype=float)
+
+            out = sim_y_arr.copy()
+            main_cols = [str(c) for c in (getattr(self._main, 'column_names', []) or [])]
+            ctrl_cols = [str(c) for c in (getattr(self._control, 'column_names', []) or [])]
+            ctrl_idx = {c: i for i, c in enumerate(ctrl_cols)}
+
+            for j, col in enumerate(main_cols):
+                if self._main_active and col in self._main_active:
+                    continue
+                if self._ctrl_active and col in self._ctrl_active and col in ctrl_idx:
+                    out[j, :] = sim_y2_arr[ctrl_idx[col], :]
+            return sim_t_arr, out
+        except Exception:
+            return sim_t, sim_y
 
 
 def _build_table_processor(
@@ -592,9 +760,17 @@ def _create_custom_models(
         except Exception:
             pass
 
-        pnames = list(it.param_names or [])
-        state_names = list(it.state_names or [])
-        ode_text = str(it.ode_text or '')
+        # Recreate ODE from the graph state so the graphs tab reflects the
+        # *current* graph definition (including control edges).
+        try:
+            edge_modes = dict(getattr(it.graph_state, 'edge_modes', {}) or {})
+        except Exception:
+            edge_modes = {}
+
+        ode_main = generate_ode_model(cols, edge_modes, include_modes=(1,))
+        pnames = list(ode_main.param_names or [])
+        state_names = list(ode_main.state_names or [])
+        ode_text = str(ode_main.ode_text or '')
         try:
             odes = compile_ode_equations(
                 ode_text,
@@ -605,7 +781,7 @@ def _create_custom_models(
         except Exception as e:
             # Do not kill the whole tab because a single computation is inconsistent.
             log.debug(
-                'graphs_tab: computation %s failed to compile ODE: %s (state_names=%s param_names=%s). First lines=%s',
+                'graphs_tab: computation %s failed to compile MAIN ODE: %s (state_names=%s param_names=%s). First lines=%s',
                 disp,
                 e,
                 _list_short(state_names, 30),
@@ -614,6 +790,74 @@ def _create_custom_models(
                 exc_info=True,
             )
             continue
+
+        # Build control induced subgraph (mode=2). We keep it attached to the
+        # main model so the plotting layer can merge simulated curves.
+        endpoints: set[str] = set()
+        edge_ctrl: dict[tuple[str, str], int] = {}
+        try:
+            for (a, b), m in edge_modes.items():
+                try:
+                    mv = int(m)
+                except Exception:
+                    mv = 0
+                if mv == 2:
+                    endpoints.add(str(a))
+                    endpoints.add(str(b))
+                    edge_ctrl[(str(a), str(b))] = 2
+        except Exception:
+            endpoints = set()
+            edge_ctrl = {}
+
+        nodes_ctrl = [str(n) for n in cols if str(n) in endpoints]
+        model_ctrl = None
+        ctrl_active_cols: set[str] = set()
+        if nodes_ctrl and edge_ctrl:
+            cols_ctrl = [c for c in cols if str(c) in set(nodes_ctrl)]
+            ctrl_active_cols = set(str(c) for c in cols_ctrl)
+            try:
+                conc_ctrl = df_sel[['time'] + cols_ctrl].astype(float).values
+            except Exception:
+                conc_ctrl = None
+            if conc_ctrl is not None and len(cols_ctrl) > 0:
+                try:
+                    ode_ctrl = generate_ode_model(cols_ctrl, edge_ctrl, include_modes=(2,))
+                    pnames_ctrl = list(ode_ctrl.param_names or [])
+                    state_names_ctrl = list(ode_ctrl.state_names or [])
+                    odes_ctrl = compile_ode_equations(
+                        str(ode_ctrl.ode_text or ''),
+                        state_names=state_names_ctrl,
+                        param_names=pnames_ctrl,
+                        order=["d" + s for s in state_names_ctrl],
+                    )
+                    model_ctrl = KineticModel(
+                        concentration_data=conc_ctrl,
+                        column_names=list(cols_ctrl),
+                        init_method=initialization,
+                        t_shift=float(used_t_shift),
+                        t_max=float(tmax_eff),
+                        custom_odes=odes_ctrl,
+                        param_names_override=pnames_ctrl,
+                        k_init=[0.01] * (len(pnames_ctrl) if len(pnames_ctrl) > 0 else 1),
+                        verbose=False,
+                    )
+                except Exception as e:
+                    model_ctrl = None
+                    log.debug('graphs_tab: computation %s failed to compile CONTROL ODE: %s', disp, e, exc_info=True)
+
+        main_active_cols: set[str] = set()
+        try:
+            for (a, b), m in edge_modes.items():
+                try:
+                    mv = int(m)
+                except Exception:
+                    mv = 0
+                if mv == 1:
+                    main_active_cols.add(str(a))
+                    main_active_cols.add(str(b))
+            main_active_cols = {c for c in main_active_cols if c in set(str(x) for x in cols)}
+        except Exception:
+            main_active_cols = set(str(x) for x in cols)
 
         # Clamp t_max to available time.
         try:
@@ -638,6 +882,14 @@ def _create_custom_models(
             k_init=[0.01] * max(1, len(pnames)),
             verbose=False,
         )
+
+        # Attach optional control model + active-column metadata for merged plotting.
+        try:
+            setattr(model, '_control_model', model_ctrl)
+            setattr(model, '_main_active_columns', set(main_active_cols or []))
+            setattr(model, '_control_active_columns', set(ctrl_active_cols or []))
+        except Exception:
+            pass
         # Keep the same key format as in the processing pipeline.
         base_key = f"Konfigurovatelný: {disp}"
         key = base_key
@@ -912,6 +1164,12 @@ def _render_graphs_tab_body(experiment_id: int) -> None:
         # (For graph-defined models this is required to get the same shifted timeline.)
         try:
             model.reinit_kinetic_model(t_shift=used_t_shift_f)
+            ctrl = getattr(model, '_control_model', None)
+            if ctrl is not None:
+                try:
+                    ctrl.reinit_kinetic_model(t_shift=used_t_shift_f)
+                except Exception:
+                    pass
         except Exception as e:
             log.debug(
                 'graphs_tab: model.reinit_kinetic_model failed for %s: %s (used_t_shift=%s init_method=%s)',
@@ -923,37 +1181,41 @@ def _render_graphs_tab_body(experiment_id: int) -> None:
             )
 
         # Apply persisted constants (k-values) from the last run.
-        vals = _values_from_constants(consts)
-        if vals:
+        if consts:
+            _apply_constants_to_model_for_plot(model, consts)
+            ctrl = getattr(model, '_control_model', None)
+            if ctrl is not None:
+                _apply_constants_to_model_for_plot(ctrl, consts)
             try:
-                import numpy as np
-                model.k_fit = np.array(vals, dtype=float)
-            except Exception:
-                model.k_fit = vals
-            try:
+                v = getattr(model, 'k_fit', None)
+                v = list(v) if v is not None else []
                 log.trace(
-                    'graphs_tab: applied %d constants to %s (first=%s last=%s)',
-                    len(vals),
+                    'graphs_tab: applied %d constants to %s (main_params=%d)',
+                    len(consts),
                     name,
-                    _short(vals[0], 40),
-                    _short(vals[-1], 40),
+                    len(list(getattr(model, 'param_names_override', None) or [])),
                 )
             except Exception:
                 pass
         else:
-            # This should not happen for models saved from processing tab.
-            # If it does, show what we got from DB to make debugging straightforward.
             try:
                 log.debug(
-                    'graphs_tab: WARNING no constants found for %s; constants payload keys=%s payload_sample=%s',
+                    'graphs_tab: WARNING no constants found for %s; payload empty',
                     name,
-                    _list_short(sorted({str(k) for d in consts for k in (d.keys() if isinstance(d, dict) else [])}), 40),
-                    _short(consts[:2], 200),
                 )
             except Exception:
                 log.debug('graphs_tab: WARNING no constants found for %s', name)
         try:
-            plotter = AdvancedPlotter(name, model, t_max=sim_t_max, time_points=2000)
+            model_for_plot = model
+            ctrl = getattr(model, '_control_model', None)
+            if ctrl is not None:
+                model_for_plot = _MergedSimulationModel(
+                    model,
+                    ctrl,
+                    main_active_columns=getattr(model, '_main_active_columns', None),
+                    control_active_columns=getattr(model, '_control_active_columns', None),
+                )
+            plotter = AdvancedPlotter(name, model_for_plot, t_max=sim_t_max, time_points=2000)
             plotters[name] = plotter
         except Exception as e:
             try:
@@ -1412,7 +1674,13 @@ def _render_controls_for(
                         icon='colorize',
                         color=cs.color,
                         color_type='hexa',
-                        on_pick=lambda e: _set_curve_color(str(getattr(e, 'color', cs.color))),
+                        # IMPORTANT: bind the function object as a default arg.
+                        # Otherwise Python's late-binding inside the for-loop would make
+                        # every picker call the *last* loop iteration's handler.
+                        on_pick=(
+                            lambda e, _f=_set_curve_color, _fallback=str(cs.color):
+                                _f(str(getattr(e, 'color', _fallback)))
+                        ),
                     )
                     picker.bind_color(cs, 'color')
                     ui.input('Popisek', value=cs.label,

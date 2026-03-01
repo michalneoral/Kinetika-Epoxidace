@@ -136,6 +136,17 @@ def _node_number_map(state: GraphState) -> Dict[str, int]:
     return {name: i + 1 for i, name in enumerate(state.nodes)}
 
 
+def _node_display_label(state: GraphState, node_name: str) -> str:
+    """Return a UI-only node label with a 1..N order prefix.
+
+    Important: This is *only* for mermaid rendering. Node names used elsewhere
+    (tables, generated plots, ODE generation) stay unchanged.
+    """
+    num = _node_number_map(state).get(node_name, 0)
+    safe = node_name.replace('"', "\\\"")
+    return f"{num}. {safe}" if num else safe
+
+
 def _edge_color(mode: EdgeMode) -> str:
     return {0: '#94a3b8', 1: '#16a34a', 2: '#dc2626'}.get(mode, '#94a3b8')
 
@@ -167,8 +178,7 @@ def build_compact_mermaid(state: GraphState) -> str:
 
     lines = ['flowchart LR']
     for n in nodes:
-        label = n.replace('"', "\\\"")
-        lines.append(f'{_mid(n)}["{label}"]')
+        lines.append(f'{_mid(n)}["{_node_display_label(state, n)}"]')
 
     for idx, (a, b) in enumerate(shown_edges):
         mode = shown_modes[idx]
@@ -244,8 +254,7 @@ def create_graph_widget(state: GraphState, key: str, title: Optional[str] = None
 
         lines = ['flowchart LR']
         for n in nodes:
-            label = n.replace('"', "\\\"")
-            lines.append(f'{_mid(n)}["{label}"]')
+            lines.append(f'{_mid(n)}["{_node_display_label(state, n)}"]')
 
         for idx, (a, b) in enumerate(current_edges):
             lines.append(f"{_mid(a)} -->|k_{num[a]}->{num[b]}| {_mid(b)}")

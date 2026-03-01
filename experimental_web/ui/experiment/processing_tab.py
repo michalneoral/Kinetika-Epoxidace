@@ -96,6 +96,9 @@ def _compute_kinetics_job(
 
     from experimental_web.domain.kinetic_model import KineticModel
     from experimental_web.domain.ode_compiler import compile_ode_equations
+    from experimental_web.domain.control_graph import control_subgraph, parse_edge_modes_payload
+    from experimental_web.domain.ode_generation import generate_ode_model
+    from experimental_web.domain.plot_merge import plot_debug_merged
 
     processor = TableProcessor(fame_df=fame_df, epo_df=epo_df)
     processor.process()
@@ -109,6 +112,11 @@ def _compute_kinetics_job(
     init_name = params.get("initialization", "TIME_SHIFT")
     params2 = dict(params)
     params2["initialization"] = InitConditions[init_name]
+
+
+    # Support for optional control (mode=2) computations.
+    control_specs: dict[str, Any] = {}
+    effective_t_shift: float = float(params2.get('t_shift', 1.0) or 0.0)
 
     # Attach configurable (graph-defined) model(s), if any.
     custom_models: dict[str, Any] = {}
@@ -144,6 +152,27 @@ def _compute_kinetics_job(
 
             if not cols:
                 continue
+
+            # Determine which columns are active in the main/control parts.
+            # (Used for merged plotting: control replaces main for nodes which are
+            # present in the global node list but inactive in the main graph.)
+            main_active_cols: set[str] = set()
+            control_active_cols: set[str] = set()
+            try:
+                edges_parsed = parse_edge_modes_payload(item.get('edge_modes'))
+                for a, b, m in edges_parsed:
+                    if int(m) == 1:
+                        main_active_cols.add(str(a))
+                        main_active_cols.add(str(b))
+                    elif int(m) == 2:
+                        control_active_cols.add(str(a))
+                        control_active_cols.add(str(b))
+                colset = set(str(c) for c in cols)
+                main_active_cols = {c for c in main_active_cols if c in colset}
+                control_active_cols = {c for c in control_active_cols if c in colset}
+            except Exception:
+                main_active_cols = set(str(c) for c in cols)
+                control_active_cols = set()
 
             if time_col is None:
                 t = pd.Series(range(len(table)), name="time", dtype=float)
@@ -206,6 +235,60 @@ def _compute_kinetics_job(
                 key = f"{base_key} ({suffix})"
                 suffix += 1
             custom_models[key] = model
+
+            # Build a separate control (mode=2) computation for this graph, if any.
+            try:
+                nodes_all = list(item.get('nodes') or []) or list(cols)
+                nodes_ctrl, edge_modes_ctrl = control_subgraph(nodes_all, item.get('edge_modes'), mode=2)
+                if nodes_ctrl and edge_modes_ctrl:
+                    cols_ctrl = [c for c in nodes_ctrl if c in set(cols)]
+                    if cols_ctrl:
+                        if time_col is None:
+                            t2 = pd.Series(range(len(table)), name='time', dtype=float)
+                            df_ctrl = pd.concat([t2, table[cols_ctrl]], axis=1)
+                            df_ctrl = df_ctrl.rename(columns={'time': 'time'})
+                        else:
+                            df_ctrl = table[[time_col] + cols_ctrl].copy()
+                            df_ctrl = df_ctrl.rename(columns={time_col: 'time'})
+
+                        for c in cols_ctrl:
+                            if c in df_ctrl.columns:
+                                df_ctrl[c] = pd.to_numeric(df_ctrl[c], errors='coerce')
+                        df_ctrl['time'] = pd.to_numeric(df_ctrl['time'], errors='coerce')
+                        df_ctrl = df_ctrl.fillna(0.0)
+                        conc_ctrl = df_ctrl[['time'] + cols_ctrl].astype(float).values
+
+                        ode_ctrl = generate_ode_model(nodes_ctrl, edge_modes_ctrl, include_modes=(2,))
+                        odes_ctrl = compile_ode_equations(
+                            ode_ctrl.ode_text,
+                            state_names=list(ode_ctrl.state_names),
+                            param_names=list(ode_ctrl.param_names),
+                            order=['d' + s for s in list(ode_ctrl.state_names)],
+                        )
+
+                        # Clamp t_max for control data as well
+                        try:
+                            max_time2 = float(conc_ctrl[:, 0].max())
+                            if not (max_time2 > 0):
+                                max_time2 = 0.0
+                        except Exception:
+                            max_time2 = 0.0
+                        if max_time2 > 0:
+                            tmax_ctrl = min(max(1.0, req_tmax if req_tmax > 0 else max_time2), max_time2)
+                        else:
+                            tmax_ctrl = max(1.0, req_tmax if req_tmax > 0 else 400.0)
+
+                        control_specs[key] = {
+                            'cols': cols_ctrl,
+                            'conc': conc_ctrl,
+                            'odes': odes_ctrl,
+                            'param_names': list(ode_ctrl.param_names),
+                            't_max': float(tmax_ctrl),
+                            'main_active_cols': set(main_active_cols),
+                            'control_active_cols': set(cols_ctrl),
+                        }
+            except Exception:
+                pass
     except Exception:
         # custom model is optional; ignore errors here
         pass
@@ -226,27 +309,96 @@ def _compute_kinetics_job(
     def _post_fit_callback(name: str, model: Any, idx: int, total: int) -> None:
         entry: dict[str, Any] = {}
 
-        consts = []
+        # Optional control model (computed separately, same ProcessingConfig).
+        ctrl = None
+        if name in control_specs:
+            spec = control_specs.get(name) or {}
+            try:
+                pnames_ctrl = list(spec.get('param_names') or [])
+                # If there are no control params, we still build the model to generate curves.
+                ctrl = KineticModel(
+                    concentration_data=spec.get('conc'),
+                    column_names=list(spec.get('cols') or []),
+                    init_method=params2['initialization'],
+                    t_shift=float(effective_t_shift),
+                    t_max=float(spec.get('t_max') or params2.get('t_max', 400.0)),
+                    custom_odes=spec.get('odes'),
+                    param_names_override=pnames_ctrl,
+                    k_init=[0.01] * len(pnames_ctrl) if pnames_ctrl else [0.01],
+                    verbose=False,
+                )
+                ctrl.reinit_kinetic_model(t_shift=float(effective_t_shift))
+                ctrl.fit()
+            except Exception as e:
+                ctrl = None
+                entry['control_error'] = str(e)
+
+        # Merge constants (prefer main when duplicates exist).
+        consts_out: list[dict[str, Any]] = []
         try:
-            for j, k in enumerate(model.get_constants_with_names()):
-                consts.append({"idx": j + 1, "latex": k.get("latex", ""), "value": float(k.get("value"))})
+            main_consts = list(model.get_constants_with_names() or [])
         except Exception:
-            pass
-        entry["constants"] = consts
-
+            main_consts = []
         try:
-            fig = model.plot_debug(ui=True, legend_mode="components_only", t_max_plot=params2.get("t_max_plot"))
-            png = _fig_to_png_bytes(fig)
-            entry["plot_png_b64"] = _b64.b64encode(png).decode("ascii")
-        except Exception as e:
-            entry["plot_error"] = str(e)
+            ctrl_consts = list(ctrl.get_constants_with_names() or []) if ctrl is not None else []
+        except Exception:
+            ctrl_consts = []
 
-        results["models"][name] = entry
-        _emit({"type": "model_result", "name": name, "entry": entry, "done": idx, "total": total})
+        seen = set()
+        for k in main_consts:
+            latex = str(k.get('latex', ''))
+            seen.add(latex)
+            try:
+                consts_out.append({'latex': latex, 'value': float(k.get('value'))})
+            except Exception:
+                pass
+        for k in ctrl_consts:
+            latex = str(k.get('latex', ''))
+            if latex in seen:
+                continue
+            seen.add(latex)
+            try:
+                consts_out.append({'latex': latex, 'value': float(k.get('value'))})
+            except Exception:
+                pass
+
+        # Add indices expected by UI
+        entry['constants'] = [
+            {'idx': i + 1, 'latex': c.get('latex', ''), 'value': float(c.get('value', 0.0))}
+            for i, c in enumerate(consts_out)
+        ]
+
+        # Plot merged figure: control curves are added only if not present in main.
+        try:
+            fig = plot_debug_merged(
+                model,
+                ctrl,
+                legend_mode='components_only',
+                t_max_plot=params2.get('t_max_plot'),
+                prefer_main=True,
+                main_active_columns=set((spec.get('main_active_cols') or [])) if name in control_specs else None,
+                control_active_columns=set((spec.get('control_active_cols') or [])) if name in control_specs else None,
+                ui=True,
+            )
+            png = _fig_to_png_bytes(fig)
+            entry['plot_png_b64'] = _b64.b64encode(png).decode('ascii')
+        except Exception as e:
+            entry['plot_error'] = str(e)
+
+        results['models'][name] = entry
+        _emit({'type': 'model_result', 'name': name, 'entry': entry, 'done': idx, 'total': total})
 
     def _progress_callback(event: Any) -> None:
         """Forward progress events from the domain pipeline to the UI."""
+        nonlocal effective_t_shift
         if isinstance(event, dict):
+            # Capture the final t_shift from OptimumTShift to reuse for control models.
+            try:
+                if event.get('type') == 'phase' and event.get('phase') == 'optim_time_shift' and event.get('state') == 'end':
+                    if 't_shift' in event and event.get('t_shift') is not None:
+                        effective_t_shift = float(event.get('t_shift'))
+            except Exception:
+                pass
             _emit(event)
 
     # Run the original pipeline (incl. OptimumTShift) and stream progress per-model.
@@ -693,6 +845,10 @@ def render_processing_tab(experiment_id: int) -> None:
                             "table_name": it.table_name,
                             "used_heads": list(it.used_heads or []),
                             "nodes": list(getattr(it.graph_state, "nodes", []) or []),
+                            "edge_modes": [
+                                [a, b, int(m)]
+                                for (a, b), m in dict(getattr(it.graph_state, "edge_modes", {}) or {}).items()
+                            ],
                             "ode_text": it.ode_text,
                             "state_names": list(it.state_names or []),
                             "param_names": list(it.param_names or []),
@@ -829,6 +985,10 @@ def render_processing_tab(experiment_id: int) -> None:
                 ef2 = ExperimentFileRepository(DB_PATH).get_single_for_experiment(experiment_id)
                 if ef2 and ef2.selected_sheet:
                     run_settings['sheet'] = str(ef2.selected_sheet)
+                if ef2 and getattr(ef2, 'sha256', None):
+                    run_settings['file_sha256'] = str(ef2.sha256)
+                if ef2 and getattr(ef2, 'filename', None):
+                    run_settings['file_name'] = str(ef2.filename)
 
                 pick_repo2 = TablePickRepository(DB_PATH)
                 fp = pick_repo2.get(experiment_id, 'fame')

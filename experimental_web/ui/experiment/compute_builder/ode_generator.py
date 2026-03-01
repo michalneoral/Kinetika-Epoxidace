@@ -8,13 +8,13 @@ from experimental_web.ui.experiment.compute_builder.graph import GraphState
 Edge = Tuple[str, str]
 
 
-def generate_odes_model(graph_state: GraphState) -> ODEModel:
+def generate_odes_model(graph_state: GraphState, *, include_modes: Tuple[int, ...] = (1, 2)) -> ODEModel:
     """Generate an ODE model (text + state/param names) from the current graph state.
 
     The output text is compatible with `load_odes_from_txt` / `load_odes_from_text`
     from `experimental_web.domain.ode_compiler`.
     """
-    return generate_ode_model(graph_state.nodes, graph_state.edge_modes)
+    return generate_ode_model(graph_state.nodes, graph_state.edge_modes, include_modes=include_modes)
 
 
 def generate_odes_text(graph_state: GraphState) -> str:

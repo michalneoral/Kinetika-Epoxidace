@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Any, Callable, Optional
 from typing_extensions import Self
 
@@ -6,17 +8,84 @@ from nicegui.events import ColorPickEventArguments, GenericEventArguments, Handl
 from nicegui.elements.menu import Menu
 from nicegui import ui
 
+# NOTE:
+# We intentionally avoid dynamic Tailwind classes like "bg-[#ff00aa]".
+# Tailwind CSS is compiled ahead-of-time; dynamic values selected at runtime would
+# not have CSS rules and the preview would stop updating after a few picks.
+# Instead we use an inline CSS variable which is always available.
+
+def _ensure_css() -> None:
+    """Ensure the ColorPickerButton CSS exists in the *current* browser document.
+
+    NiceGUI routes can trigger full page reloads in the browser while the server
+    process keeps modules cached. A module-level "already added" flag would then
+    incorrectly skip injecting CSS after reopening an experiment.
+
+    We therefore inject idempotently via JS (per-document).
+    """
+
+    css = r"""
+  /*
+    Quasar's q-btn does not always paint the visible background on the root
+    element; depending on the variant, the visible paint can be on
+    `.q-btn__content` and/or via pseudo elements.
+
+    Therefore we set the color variable on the root and paint the preview
+    on BOTH the root and the content to be robust across Quasar versions.
+  */
+  .cpb-btn {
+    background: none !important;
+  }
+
+  .cpb-btn,
+  .cpb-btn::before,
+  .cpb-btn::after,
+  .cpb-btn .q-btn__content,
+  .cpb-btn .q-btn__content::before,
+  .cpb-btn .q-btn__content::after {
+    background-color: var(--cpb-color) !important;
+  }
+
+  .cpb-btn,
+  .cpb-btn .q-btn__content {
+    color: white !important; /* icon contrast on dark colors */
+  }
+
+  .cpb-btn .q-btn__content {
+    border-radius: inherit;
+  }
+"""
+
+    ui.run_javascript(
+        """
+(() => {
+  const id = 'cpb-style';
+  if (document.getElementById(id)) return;
+  const style = document.createElement('style');
+  style.id = id;
+  style.textContent = %s;
+  document.head.appendChild(style);
+})();
+""" % (repr(css),)
+    )
+
+
 class ColorPickerButton:
-    def __init__(self, *,
-                 icon: str = 'palette',
-                 color: str = '#00ff00',
-                 color_type: str = 'rgb',
-                 on_pick: Optional[Callable[[ColorPickEventArguments], None]] = None):
+    def __init__(
+        self,
+        *,
+        icon: str = 'palette',
+        color: str = '#00ff00',
+        color_type: str = 'rgb',
+        on_pick: Optional[Callable[[ColorPickEventArguments], None]] = None,
+    ):
+        _ensure_css()
+
         self._color = color
-        self._bound = None
+        self._bound: Optional[tuple[Any, str]] = None
         self.color_type = color_type.lower()
 
-        with ui.button(icon=icon).classes(f'!bg-[{self._color}]') as self.button:
+        with ui.button(icon=icon).classes('cpb-btn').style(f'--cpb-color: {self._color};') as self.button:
             self.picker = CustomColorPicker(
                 on_pick=self._handle_pick,
                 color_type=self.color_type,
@@ -25,9 +94,13 @@ class ColorPickerButton:
 
         self.user_callback = on_pick
 
+    def _apply_color_to_button(self, color: str) -> None:
+        # Update via CSS variable (works for any runtime color).
+        self.button.style(f'--cpb-color: {color};')
+
     def _handle_pick(self, e: ColorPickEventArguments):
         self._color = e.color
-        self.button.classes(f'!bg-[{e.color}]')
+        self._apply_color_to_button(e.color)
         self.picker.set_color(e.color)
 
         if self._bound:
@@ -45,9 +118,9 @@ class ColorPickerButton:
         self._bound = (obj, key)
 
         initial_color = getattr(obj, key) if hasattr(obj, key) else obj[key]
-        self._color = initial_color
-        self.picker.set_color(initial_color)
-        self.button.classes(f'!bg-[{initial_color}]')
+        self._color = str(initial_color)
+        self.picker.set_color(self._color)
+        self._apply_color_to_button(self._color)
         return self
 
     @property
@@ -55,19 +128,21 @@ class ColorPickerButton:
         return self._color
 
     def set_color(self, color: str):
-        self._color = color
-        self.picker.set_color(color)
-        self.button.classes(f'!bg-[{color}]')
+        self._color = str(color)
+        self.picker.set_color(self._color)
+        self._apply_color_to_button(self._color)
 
 
 class CustomColorPicker(Menu):
 
-    def __init__(self, *,
-                 color: Optional[str] = None,
-                 on_pick: Optional[Handler[ColorPickEventArguments]] = None,
-                 value: bool = False,
-                 color_type: str = 'rgb',
-                 ) -> None:
+    def __init__(
+        self,
+        *,
+        color: Optional[str] = None,
+        on_pick: Optional[Handler[ColorPickEventArguments]] = None,
+        value: bool = False,
+        color_type: str = 'rgb',
+    ) -> None:
         super().__init__(value=value)
         self._pick_handlers = [on_pick] if on_pick else []
         self._color_value = color if color is not None else "#ffffff"  # default fallback color
@@ -89,6 +164,7 @@ class CustomColorPicker(Menu):
     def set_color(self, color: str) -> None:
         """Set the color of the picker."""
         self._color_value = color
+        # Quasar q-color expects model-value for external set.
         self.q_color.props(f'model-value="{color}"')
 
     def on_pick(self, callback: Handler[ColorPickEventArguments]) -> Self:
@@ -99,10 +175,9 @@ class CustomColorPicker(Menu):
     def bind_color(self, obj: Any, key: str) -> Self:
         """Bind this color picker to a value in a dict or dataclass."""
         initial_color = getattr(obj, key) if hasattr(obj, key) else obj[key]
-        self.set_color(initial_color)
+        self.set_color(str(initial_color))
 
-        # TODO: forward and backward is not implemented
-
+        # NOTE: forward and backward binding is not implemented; we only push on change.
         def update_model(e: ColorPickEventArguments):
             if hasattr(obj, key):
                 setattr(obj, key, e.color)
