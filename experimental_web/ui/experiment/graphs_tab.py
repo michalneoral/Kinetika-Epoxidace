@@ -763,6 +763,19 @@ def _create_custom_models(
         except Exception:
             pass
 
+
+        # Clamp t_max to available time (precompute tmax_eff early so the control model can use it too).
+        try:
+            max_time = float(conc_data[:, 0].max())
+            if not (max_time > 0):
+                max_time = 0.0
+        except Exception:
+            max_time = 0.0
+        if max_time > 0:
+            tmax_eff = min(max(1.0, t_max), max_time)
+        else:
+            tmax_eff = max(1.0, t_max)
+
         # Recreate ODE from the graph state so the graphs tab reflects the
         # *current* graph definition (including control edges).
         try:
@@ -796,8 +809,15 @@ def _create_custom_models(
 
         # Build control induced subgraph (mode=2). We keep it attached to the
         # main model so the plotting layer can merge simulated curves.
-        endpoints: set[str] = set()
-        edge_ctrl: dict[tuple[str, str], int] = {}
+        #
+        # IMPORTANT: keep node/edge labels in their original types.
+        # Pandas column headers coming from Excel can be non-strings (numbers,
+        # datetimes, ...). If we stringify edge endpoints here, generate_ode_model
+        # will see edges whose endpoints do *not* match the node list and will
+        # silently produce an empty ODE (all dX = 0), which then looks like
+        # "merging doesn't work" on the Graphs tab.
+        endpoints: set[Any] = set()
+        edge_ctrl: dict[tuple[Any, Any], int] = {}
         try:
             for (a, b), m in edge_modes.items():
                 try:
@@ -805,24 +825,37 @@ def _create_custom_models(
                 except Exception:
                     mv = 0
                 if mv == 2:
-                    endpoints.add(str(a))
-                    endpoints.add(str(b))
-                    edge_ctrl[(str(a), str(b))] = 2
+                    endpoints.add(a)
+                    endpoints.add(b)
+                    edge_ctrl[(a, b)] = 2
         except Exception:
             endpoints = set()
             edge_ctrl = {}
 
-        nodes_ctrl = [str(n) for n in cols if str(n) in endpoints]
+        nodes_ctrl = [n for n in cols if n in endpoints]
         model_ctrl = None
         ctrl_active_cols: set[str] = set()
         if nodes_ctrl and edge_ctrl:
-            cols_ctrl = [c for c in cols if str(c) in set(nodes_ctrl)]
+            cols_ctrl = [c for c in cols if c in set(nodes_ctrl)]
             ctrl_active_cols = set(str(c) for c in cols_ctrl)
             try:
                 conc_ctrl = df_sel[['time'] + cols_ctrl].astype(float).values
             except Exception:
                 conc_ctrl = None
             if conc_ctrl is not None and len(cols_ctrl) > 0:
+
+                # Clamp t_max for control data as well.
+                try:
+                    max_time2 = float(conc_ctrl[:, 0].max())
+                    if not (max_time2 > 0):
+                        max_time2 = 0.0
+                except Exception:
+                    max_time2 = 0.0
+                if max_time2 > 0:
+                    tmax_ctrl = min(max(1.0, t_max), max_time2)
+                else:
+                    tmax_ctrl = max(1.0, t_max)
+
                 try:
                     ode_ctrl = generate_ode_model(cols_ctrl, edge_ctrl, include_modes=(2,))
                     pnames_ctrl = list(ode_ctrl.param_names or [])
@@ -838,7 +871,7 @@ def _create_custom_models(
                         column_names=list(cols_ctrl),
                         init_method=initialization,
                         t_shift=float(used_t_shift),
-                        t_max=float(tmax_eff),
+                        t_max=float(tmax_ctrl),
                         custom_odes=odes_ctrl,
                         param_names_override=pnames_ctrl,
                         k_init=[0.01] * (len(pnames_ctrl) if len(pnames_ctrl) > 0 else 1),
@@ -862,17 +895,6 @@ def _create_custom_models(
         except Exception:
             main_active_cols = set(str(x) for x in cols)
 
-        # Clamp t_max to available time.
-        try:
-            max_time = float(conc_data[:, 0].max())
-            if not (max_time > 0):
-                max_time = 0.0
-        except Exception:
-            max_time = 0.0
-        if max_time > 0:
-            tmax_eff = min(max(1.0, t_max), max_time)
-        else:
-            tmax_eff = max(1.0, t_max)
 
         model = KineticModel(
             concentration_data=conc_data,
