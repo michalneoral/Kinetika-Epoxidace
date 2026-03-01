@@ -127,6 +127,43 @@ class ExperimentRepository:
 
         return new_exp
 
+    def rename(self, exp_id: int, new_name: str) -> Experiment:
+        """Rename an experiment (and best-effort rename its folder slug)."""
+
+        new_name = (new_name or '').strip()
+        if not new_name:
+            raise ValueError('Name must not be empty')
+        if self.exists_name(new_name):
+            raise ValueError('Experiment with this name already exists')
+
+        exp = self.get(exp_id)
+        if not exp:
+            raise ValueError('Experiment not found')
+
+        now = utc_now_iso()
+        with self.db.connect() as con:
+            con.execute('UPDATE experiments SET name=?, updated_at=? WHERE id=?', (new_name, now, exp_id))
+            con.commit()
+
+        # Best-effort: rename folder to match new slug.
+        try:
+            if exp.folder:
+                src = Path(exp.folder)
+                dst = EXPERIMENTS_DIR / f"{exp_id:06d}_{_safe_slug(new_name)}"
+                if src.exists() and src.is_dir() and src.resolve() != dst.resolve():
+                    if not dst.exists():
+                        src.rename(dst)
+                        with self.db.connect() as con:
+                            con.execute('UPDATE experiments SET folder=? WHERE id=?', (str(dst), exp_id))
+                            con.commit()
+        except Exception:
+            # Folder rename is best-effort; DB name is the important part.
+            pass
+
+        updated = self.get(exp_id)
+        assert updated is not None
+        return updated
+
     def delete(self, exp_id: int, delete_folder: bool = True) -> None:
         exp = self.get(exp_id)
 
@@ -238,10 +275,51 @@ class SettingsRepository:
                 )
             con.commit()
 
-    def get_theme_mode(self, default: str = "auto") -> str:
+    def _get_raw(self, key: str) -> str | None:
+        """Get a setting value.
+
+        Reads primarily from `user_settings` and falls back to the legacy
+        `settings` table if the key is missing.
+
+        This makes imports from older DBs (or bundles containing legacy
+        `settings`) work without losing configuration.
+        """
         with self.db.connect() as con:
-            row = con.execute("SELECT value FROM user_settings WHERE key='theme_mode'").fetchone()
-        return str(row["value"]) if row else default
+            row = con.execute("SELECT value FROM user_settings WHERE key=?", (key,)).fetchone()
+            if row:
+                return str(row["value"])
+            # legacy fallback
+            try:
+                row2 = con.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+            except Exception:
+                row2 = None
+            if row2:
+                return str(row2["value"])
+        return None
+
+    def _get_raw_and_migrate(self, key: str) -> str | None:
+        """Like `_get_raw`, but if value exists only in legacy table, migrate it."""
+        with self.db.connect() as con:
+            row = con.execute("SELECT value FROM user_settings WHERE key=?", (key,)).fetchone()
+            if row:
+                return str(row["value"])
+            try:
+                row2 = con.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+            except Exception:
+                row2 = None
+        if row2:
+            val = str(row2["value"])
+            # best-effort migrate into user_settings so new code sees it
+            try:
+                self._upsert(key, val)
+            except Exception:
+                pass
+            return val
+        return None
+
+    def get_theme_mode(self, default: str = "auto") -> str:
+        raw = self._get_raw_and_migrate('theme_mode')
+        return str(raw) if raw is not None else default
 
     def set_theme_mode(self, mode: str) -> None:
         if mode not in ("auto", "light", "dark"):
@@ -257,12 +335,11 @@ class SettingsRepository:
         - 0 => show immediately
         - >0 => delay before showing
         """
-        with self.db.connect() as con:
-            row = con.execute("SELECT value FROM user_settings WHERE key='help_tooltip_delay_ms'").fetchone()
-        if not row:
+        raw = self._get_raw_and_migrate('help_tooltip_delay_ms')
+        if raw is None:
             return int(default)
         try:
-            v = int(str(row['value']).strip())
+            v = int(str(raw).strip())
         except Exception:
             return int(default)
         # allow negative value to represent "disabled"
@@ -279,9 +356,8 @@ class SettingsRepository:
         Colors are stored as hex strings (e.g. "#1976D2").
         """
         key = f'ui_color_{name}'
-        with self.db.connect() as con:
-            row = con.execute("SELECT value FROM user_settings WHERE key=?", (key,)).fetchone()
-        return str(row["value"]) if row else str(default)
+        raw = self._get_raw_and_migrate(key)
+        return str(raw) if raw is not None else str(default)
 
     def set_ui_color(self, name: str, value: str) -> None:
         key = f'ui_color_{name}'
@@ -290,14 +366,10 @@ class SettingsRepository:
     def get_ui_colors(self, defaults: dict[str, str]) -> dict[str, str]:
         """Return a dict of palette colors (merged over defaults)."""
         out = dict(defaults)
-        with self.db.connect() as con:
-            for k in list(defaults.keys()):
-                row = con.execute(
-                    "SELECT value FROM user_settings WHERE key=?",
-                    (f'ui_color_{k}',),
-                ).fetchone()
-                if row:
-                    out[k] = str(row["value"])
+        for k in list(defaults.keys()):
+            raw = self._get_raw_and_migrate(f'ui_color_{k}')
+            if raw is not None:
+                out[k] = str(raw)
         return out
 
     def set_ui_colors(self, colors: dict[str, str]) -> None:
