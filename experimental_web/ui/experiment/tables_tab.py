@@ -16,6 +16,7 @@ from experimental_web.data.repositories import (
 from experimental_web.domain.fame_epo import DEFAULT_EPO, DEFAULT_FAME, extract_df
 from experimental_web.domain.table_processor_tables import TableProcessorTables
 from experimental_web.ui.utils.tables import sanitize_df_for_table
+from experimental_web.ui.utils.tooltips import attach_tooltip
 from experimental_web.ui.widgets.sticky_table import StickyTable
 from experimental_web.ui.widgets.styled_label import StyledLabel
 from experimental_web.logging_setup import get_logger
@@ -70,7 +71,20 @@ def render_tables_tab(experiment_id: int) -> None:
     cache_repo = ProcessedTablesRepository(DB_PATH)
 
     status = StyledLabel("Připraveno.", "info")
+    attach_tooltip(
+        status,
+        "Stav tabulek",
+        "Zobrazuje, zda se tabulky právě počítají, načítají z cache, nebo zda došlo k chybě. "
+        "Tabulky se automaticky přepočítají při změně dat/sheetu/picků (detekováno přes `data_version`).",
+    )
+
     container = ui.column().classes("w-full gap-3")
+    attach_tooltip(
+        container,
+        "Zpracované tabulky",
+        "Tady se zobrazují tabulky odvozené z vybraných oblastí (FAME/EPO). "
+        "Každá tabulka je v rozbalovací sekci; otevřený je defaultně „souhrn“.",
+    )
 
     ui.add_head_html('''
     <style>
@@ -117,6 +131,13 @@ def render_tables_tab(experiment_id: int) -> None:
 
     def render_tables(tables: dict[str, tuple[str, str]]) -> None:
         container.clear()
+        # Re-attach tooltip because `container.clear()` removes child elements (including tooltip).
+        attach_tooltip(
+            container,
+            "Zpracované tabulky",
+            "Tady se zobrazují tabulky odvozené z vybraných oblastí (FAME/EPO). "
+            "Každá tabulka je v rozbalovací sekci; otevřený je defaultně „souhrn“.",
+        )
         with container:
             # enforce order, then any extras
             ordered_names = TABLE_ORDER + [n for n in tables.keys() if n not in TABLE_ORDER]
@@ -129,22 +150,49 @@ def render_tables_tab(experiment_id: int) -> None:
                 except Exception:
                     continue
 
-                with ui.expansion(name, value=(name == "souhrn")) \
+                exp = ui.expansion(name, value=(name == "souhrn")) \
                     .classes("tables-expansion w-full q-mb-sm shadow-1 rounded-borders overflow-hidden") \
-                    .props('expand-separator dense'):
+                    .props('expand-separator dense')
 
+                # Lightweight, mostly generic help (we avoid hard-coding chemistry semantics here).
+                if name == "souhrn":
+                    tt_title = "Souhrn"
+                    tt_detail = (
+                        "Stručný přehled zpracovaných tabulek a mezivýsledků. "
+                        "Hodí se pro rychlou kontrolu, zda picks dávají smysl."
+                    )
+                else:
+                    tt_title = f"Tabulka: {name}"
+                    tt_detail = (
+                        "Zpracovaná tabulka uložená v cache (pokud se nezměnila data/sheet/picks). "
+                        "Rozbal sekci a tabulku můžeš rolovat; hlavička i první sloupec zůstávají přilepené."
+                    )
+
+                attach_tooltip(exp, tt_title, tt_detail)
+
+                with exp:
                     with ui.card().classes("w-full"):
                         if text_md:
-                            ui.markdown(text_md, extras=['latex']).classes("text-caption")
+                            md = ui.markdown(text_md, extras=['latex']).classes("text-caption")
+                            attach_tooltip(
+                                md,
+                                "Poznámky k tabulce",
+                                "Textové vysvětlení / vzorce k této tabulce. Pokud je povolen LaTeX, může obsahovat i matematické zápisy.",
+                            )
                             ui.separator()
 
                         cols, rows = _df_to_rows_columns(df)
-                        StickyTable.from_rows_and_columns(
+                        tbl = StickyTable.from_rows_and_columns(
                             rows=rows,
                             columns=cols,
                             sticky="both",
                             max_height="520px",
                         ).classes("w-full")
+                        attach_tooltip(
+                            tbl,
+                            "Interaktivní tabulka",
+                            "Tabulku lze rolovat. Hlavička a první sloupec jsou „sticky“, takže při scrollu zůstávají viditelné.",
+                        )
 
     def compute_and_render() -> None:
         log.info('[UI] tables.compute_and_render: experiment_id=%s', experiment_id)

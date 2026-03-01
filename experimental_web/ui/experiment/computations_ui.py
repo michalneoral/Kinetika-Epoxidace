@@ -22,6 +22,7 @@ from experimental_web.logging_setup import get_logger
 from experimental_web.ui.instrumentation import wrap_ui_handler
 from experimental_web.core.state import get_state
 from experimental_web.ui.utils.staleness import compute_staleness
+from experimental_web.ui.utils.tooltips import attach_tooltip
 
 
 log = get_logger(__name__)
@@ -98,7 +99,15 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
         _run, stale = compute_staleness(experiment_id)
 
         with ui.column().classes("w-full gap-2"):
-            ui.label("Uložené výpočty/grafy").classes("text-h6")
+            lbl_saved = ui.label("Uložené výpočty/grafy").classes("text-h6")
+            attach_tooltip(
+                lbl_saved,
+                "Uložené výpočty",
+                """Seznam uložených konfigurovatelných výpočtů (ODE grafů).
+
+Tady je můžete upravit, smazat nebo rychle otestovat fit (tlačítko *Spočítat*).
+V hlavním výpočtu v záložce Zpracování se pak počítají společně s prebuilt modely.""",
+            )
             if not items:
                 ui.label("Zatím nic uloženého.").classes("text-grey-7")
                 return
@@ -111,12 +120,17 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
                             # Staleness indicator: definition/settings changed since last run
                             try:
                                 if stale.custom_changed.get(s.name, False):
-                                    ui.badge('Změněno', color='orange').props('outline')
+                                    bchg = ui.badge('Změněno', color='orange').props('outline')
+                                    attach_tooltip(
+                                        bchg,
+                                        'Změněno',
+                                        'Definice tohoto výpočtu nebo související nastavení se změnily od posledního běhu.\n\nPřepočítáním v záložce Zpracování se badge ztratí.',
+                                    )
                             except Exception:
                                 pass
 
                         with ui.row().classes("items-center gap-2"):
-                            ui.button(
+                            btn_edit = ui.button(
                                 "Upravit",
                                 on_click=wrap_ui_handler(
                                     'computations.edit.click',
@@ -125,7 +139,11 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
                                     data=lambda i=idx, s=s: {'index': i, 'id': s.id, 'name': s.name},
                                 ),
                             ).props("flat")
-                            ui.button(
+                            attach_tooltip(btn_edit, "Upravit", """Otevře editor grafu a výběru sloupců.
+
+Použijte, když chcete změnit použité veličiny nebo přepojit hrany (hlavní/kontrolní).""")
+
+                            btn_fit = ui.button(
                                 "Spočítat",
                                 on_click=wrap_ui_handler(
                                     'computations.fit.click',
@@ -134,7 +152,11 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
                                     data=lambda i=idx, s=s: {'index': i, 'id': s.id, 'name': s.name},
                                 ),
                             ).props("flat")
-                            ui.button(
+                            attach_tooltip(btn_fit, "Spočítat (náhled)", """Rychle spočítá fit jen pro tento graf a zobrazí náhled výsledku.
+
+Neukládá to do hlavních výsledků – ty vznikají tlačítkem *Spočítat / přepočítat* nahoře v Zpracování.""")
+
+                            btn_delete = ui.button(
                                 "Smazat",
                                 on_click=wrap_ui_handler(
                                     'computations.delete.click',
@@ -143,14 +165,27 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
                                     data=lambda i=idx, s=s: {'index': i, 'id': s.id, 'name': s.name},
                                 ),
                             ).props("flat color=negative")
+                            attach_tooltip(btn_delete, "Smazat", """Trvale odstraní uložený výpočet/graf z databáze.
 
-                    ui.label(f"Tabulka: {s.table_name}").classes("text-grey-8")
+Nemá vliv na nahraný Excel ani na tabulky; jen na definici výpočtu.""")
+
+                    lbl_table = ui.label(f"Tabulka: {s.table_name}").classes("text-grey-8")
+                    attach_tooltip(lbl_table, "Zdrojová tabulka", """Tabulka (z cache zpracovaných tabulek), ze které se berou data pro tento graf.
+
+Pokud tabulka chybí, nejdřív ji vygenerujte v záložce Tabulky/Zpracování.""")
 
                     mermaid = build_compact_mermaid(s.graph_state)
-                    ui.mermaid(
+                    mer = ui.mermaid(
                         mermaid,
                         config={"securityLevel": "loose", "flowchart": {"nodeSpacing": 40, "rankSpacing": 40}},
                     ).classes("w-full")
+                    attach_tooltip(
+                        mer,
+                        "Náhled grafu",
+                        """Zhuštěný náhled výpočetního grafu (uzly = veličiny, hrany = vazby).
+
+Klikem na hrany v editoru můžete přepínat: vypnuto → hlavní → kontrolní.""",
+                    )
 
     def open_delete_dialog(index: int) -> None:
         item = repo.list_for_experiment(experiment_id)[index]
@@ -334,7 +369,10 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
         dialog.clear()
         with dialog, ui.column().classes("comp-editor-root w-screen h-screen"):
             with ui.row().classes("comp-editor-header w-full items-center justify-between p-4 shadow"):
-                ui.label("Upravit výpočet / graf" if edit_mode else "Nový výpočet / graf").classes("text-h6")
+                dlg_title = ui.label("Upravit výpočet / graf" if edit_mode else "Nový výpočet / graf").classes("text-h6")
+                attach_tooltip(dlg_title, "Editor výpočtu", """Tady definujete konfigurovatelný výpočet: vyberete tabulku, sloupce a nakreslíte graf.
+
+Hrany lze přepínat: vypnuto → hlavní → kontrolní.""")
                 ui.button("Zavřít", on_click=wrap_ui_handler('computations.dialog.close', dialog.close, level=20)).props("flat").classes("text-grey-8")
 
             default_table = existing.table_name if existing and existing.table_name in tables else list(tables.keys())[0]
@@ -346,8 +384,19 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
                 btn_continue = ui.button("Pokračovat").classes("bg-primary text-white")
                 btn_reload = ui.button("Přenačíst").classes("bg-primary text-white")
                 btn_reload.set_visibility(False)
+                attach_tooltip(table_select, "Tabulka", """Zvolte, ze které zpracované tabulky se budou brát data pro fit.
 
-            ui.label("Sloupce (drag & drop nebo dvojklik)").classes("text-subtitle1 px-6")
+Tabulky vznikají v záložce Tabulky/Zpracování a ukládají se do DB cache.""")
+                attach_tooltip(name_input, "Název", """Volitelný název výpočtu. Pokud ho nevyplníte, doplní se automaticky.""")
+                attach_tooltip(btn_continue, "Pokračovat", """Načte sloupce z vybrané tabulky a otevře drag&drop výběr + editor grafu.""")
+                attach_tooltip(btn_reload, "Přenačíst", """Znovu načte sloupce pro právě vybranou tabulku.
+
+Použijte, když jste změnil tabulku nebo se tabulky mezitím přepočítaly.""")
+
+            lbl_cols = ui.label("Sloupce (drag & drop nebo dvojklik)").classes("text-subtitle1 px-6")
+            attach_tooltip(lbl_cols, "Výběr veličin", """Přesunujte sloupce mezi *Použitá data* a *Nepoužitá data*.
+
+Pořadí v *Použitá data* určuje pořadí uzlů v grafu (číslování 1..N je jen UI).""")
 
             with ui.row().classes("w-full px-6 items-center gap-6"):
                 chosen_table_label = ui.label("").classes("text-grey-8")
@@ -360,7 +409,10 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
                 dnd_area = ui.row().classes("w-full gap-6 items-start")
 
             ui.separator().classes("mx-6")
-            ui.label("Graf (klik na hrany: vypnuto → hlavní → kontrolní)").classes("text-subtitle1 px-6")
+            lbl_graph = ui.label("Graf (klik na hrany: vypnuto → hlavní → kontrolní)").classes("text-subtitle1 px-6")
+            attach_tooltip(lbl_graph, "Editor grafu", """Klikem na hranu přepínáte režim: vypnuto → hlavní (mode=1) → kontrolní (mode=2).
+
+Kontrolní hrany se počítají separátně a při vykreslení se mergeují podle pravidel priority.""")
 
             graph_wrapper = ui.column().classes("w-full px-6 gap-2")
             graph_wrapper.set_visibility(False)
@@ -370,8 +422,15 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
 
             with ui.row().classes("w-full px-6 justify-end items-center mt-2"):
                 btn_save = ui.button("Uložit změny" if edit_mode else "Uložit").classes("bg-primary text-white")
+                attach_tooltip(btn_save, "Uložit", """Uloží definici výpočtu do databáze.
+
+Po uložení se výpočet objeví v seznamu a bude zahrnut do hlavního běhu v Zpracování.""")
                 btn_preview = ui.button("Náhled", icon="show_chart").props("outline")
-                ui.button("Zrušit", on_click=dialog.close).props("flat")
+                attach_tooltip(btn_preview, "Náhled", """Rychle spočítá fit a zobrazí graf ještě před uložením (ověření).
+
+Použije aktuální nastavení inicializace/t_shift z ProcessingConfig.""")
+                btn_cancel = ui.button("Zrušit", on_click=dialog.close).props("flat")
+                attach_tooltip(btn_cancel, "Zrušit", """Zavře editor bez uložení změn.""")
 
             def update_buttons() -> None:
                 selected = table_select.value
@@ -589,14 +648,29 @@ def computations_block(experiment_id: int, params: Optional[ProcessingConfig] = 
         dialog.open()
 
     with ui.row().classes("items-center gap-3"):
-        ui.button(
+        btn_add = ui.button(
             "Přidej nový výpočet",
             on_click=wrap_ui_handler('computations.add_new.click', lambda: open_calc_dialog(), level=20),
         ).props("outline")
-        ui.button(
+        attach_tooltip(
+            btn_add,
+            "Nový výpočet / graf",
+            """Vytvoří nový konfigurovatelný výpočet: vyberete tabulku, sloupce a nakreslíte graf (hlavní/kontrolní hrany).
+
+Uložené grafy se pak počítají i v hlavním běhu v záložce Zpracování.""",
+        )
+
+        btn_odes = ui.button(
             "Zobraz ODEs",
             on_click=wrap_ui_handler('computations.show_odes.click', open_ode_dialog, level=20),
         ).props("outline")
+        attach_tooltip(
+            btn_odes,
+            "Zobraz ODEs",
+            """Zobrazí text ODE rovnic pro všechny uložené grafy.
+
+Ukazuje jak hlavní (mode=1), tak kontrolní (mode=2) ODE.""",
+        )
 
     # Initial render
     render_saved()

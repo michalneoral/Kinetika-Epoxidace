@@ -26,6 +26,7 @@ from experimental_web.ui.widgets.styled_label import StyledLabel
 from experimental_web.logging_setup import get_logger, log_scope
 from experimental_web.ui.instrumentation import wrap_ui_handler
 from experimental_web.ui.utils.staleness import compute_staleness, is_model_stale
+from experimental_web.ui.utils.tooltips import attach_tooltip
 
 
 log = get_logger(__name__)
@@ -92,7 +93,10 @@ def _compute_kinetics_job(
 
     for df in (fame_df, epo_df):
         for col in df.columns[1:]:
-            df[col] = pd.to_numeric(df[col], errors="ignore")
+            # Pandas supports only errors={'raise','coerce'} for to_numeric.
+            # We want a best-effort conversion for downstream computations,
+            # therefore we coerce invalid values to NaN.
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     from experimental_web.domain.kinetic_model import KineticModel
     from experimental_web.domain.ode_compiler import compile_ode_equations
@@ -1056,11 +1060,32 @@ def render_processing_tab(experiment_id: int) -> None:
             except Exception:
                 pass
 
-    with ui.expansion("Nastavení parametrů pro výpočet", icon="⚙️").classes("w-full rounded-borders shadow-1")\
-        .props("dense").bind_value(params_gui, "expanded"):
+    exp_params = (
+        ui.expansion("Nastavení parametrů pro výpočet", icon="⚙️")
+        .classes("w-full rounded-borders shadow-1")
+        .props("dense")
+        .bind_value(params_gui, "expanded")
+    )
+    attach_tooltip(
+        exp_params,
+        "Parametry výpočtu",
+        """Nastavení, která ovlivňují fit kinetických modelů (inicializace, t_shift a časové limity).
+
+Pokud se změní data, výběry tabulek nebo definice výpočetního grafu, výsledky se označí jako *Změněno*.""",
+    )
+
+    with exp_params:
 
         with ui.row().classes("q-gutter-xl items-start"):
-            with ui.column().tooltip("Vyberte jen modely, které chcete spočítat. Více modelů snižuje rychlost výpočtu"):
+            models_col = ui.column()
+            attach_tooltip(
+                models_col,
+                "Výběr modelů",
+                """Zaškrtněte jen modely, které chcete spočítat.
+
+Více modelů = delší výpočet. Konfigurovatelné (grafové) výpočty se přidají automaticky, pokud jsou uložené.""",
+            )
+            with models_col:
                 ui.label("Modely, které se budou počítat:")
                 for item in get_possible_models():
                     ui.checkbox(
@@ -1077,28 +1102,52 @@ def render_processing_tab(experiment_id: int) -> None:
                         ),
                     )
 
-            with ui.column():
+            cfg_col = ui.column()
+            attach_tooltip(
+                cfg_col,
+                "Inicializace a t_shift",
+                """Zvolte způsob inicializace a případně zapněte automatickou optimalizaci t_shift.
+
+- *Auto t_shift* hledá nejlepší posun času společný pro všechny počítané modely.
+- Pokud je auto vypnuté, použije se manuální t_shift.""",
+            )
+            with cfg_col:
                 options = list(InitConditions)
                 labels = [opt.name for opt in options]
 
-                help_text = "### Nastavení volby\n\n"
-                help_text += "\n".join([f"- **{opt.name.upper()}**: {opt.description}" for opt in options])
-                help_text += "\n\nDoporučeno: Použít **TIME_SHIFT**"
+                help_lines = [
+                    "- **Doporučeno:** **TIME_SHIFT**",
+                    "",
+                    "Možnosti inicializace:",
+                ] + [f"- **{opt.name.upper()}**: {opt.description}" for opt in options]
+                help_text = "\n".join(help_lines)
 
                 select = ui.select(options=labels, label="Zvolte způsob inicializace:", value=params.initialization.name)
                 select.bind_value(params, "initialization", forward=lambda v: InitConditions[v], backward=lambda v: v.name).classes("w-80")
                 select.on('update:model-value', wrap_ui_handler('processing.initialization.change', lambda e: None, level=10, data=lambda e: {'value': getattr(e, 'value', None)}))
-                with ui.tooltip():
-                    ui.markdown(help_text)
+                attach_tooltip(select, "Inicializace", help_text)
 
-                ui.checkbox(
+                auto_cb = ui.checkbox(
                     "Time shift automaticky",
                     on_change=wrap_ui_handler('processing.optim_time_shift.toggle', lambda e: None, level=10, data=lambda e: {'value': bool(getattr(e, 'value', False))}),
                 ).bind_value(params, "optim_time_shift")
+                attach_tooltip(
+                    auto_cb,
+                    "Automatický t_shift",
+                    """Optimalizuje společný posun času (t_shift) tak, aby fit vycházel co nejlépe.
 
-                # Show last computed auto t_shift near the toggle (only when auto is enabled).
+Hodí se, když začátek reakce není přesně v čase 0 nebo jsou data časově posunutá.""",
+                )
+
                 auto_info = ui.row().classes('items-center gap-2')
                 auto_info.bind_visibility_from(params, 'optim_time_shift', lambda v: bool(v))
+                attach_tooltip(
+                    auto_info,
+                    "Auto t_shift (výsledek)",
+                    """Zobrazuje poslední spočítanou hodnotu t_shift z automatické optimalizace.
+
+Ukládá se do DB spolu s nastavením výpočtu.""",
+                )
                 with auto_info:
                     ui.label('Auto t_shift:').classes('text-caption text-grey-7')
                     auto_t_shift_label = ui.label('').classes('text-caption')
@@ -1116,6 +1165,13 @@ def render_processing_tab(experiment_id: int) -> None:
                 with manual:
                     num = ui.number(label=r"Manuální nastavení t_0", min=0.01, max=20.0, precision=2).bind_value(params, "t_shift").classes("w-80")
                     num.on('update:model-value', wrap_ui_handler('processing.t_shift.change', lambda e: None, level=10, data=lambda e: {'value': getattr(e, 'value', None)}))
+                    attach_tooltip(
+                        num,
+                        "Manuální t_shift",
+                        """Použije se jako posun času (t0) pro všechny modely, pokud je *Auto t_shift* vypnuté.
+
+Typicky v minutách (podle jednotek času ve vašich datech).""",
+                    )
 
                 # t_max (persisted): clamp range from 1..max time in cached tables
                 def _max_time_from_cache() -> float:
@@ -1170,6 +1226,12 @@ def render_processing_tab(experiment_id: int) -> None:
                     precision=1,
                 ).bind_value(params, 't_max').classes('w-80')
 
+                attach_tooltip(
+                    tmax,
+                    't_max',
+                    'Maximální čas simulace (do jakého času se integrují ODE).\n\nDoporučení: nechte zhruba na maximálním dostupném čase ve vašich datech.',
+                )
+
                 tmax_plot = ui.number(
                     label=r"t_{max,plot} (max xlim grafu)",
                     min=1.0,
@@ -1183,7 +1245,7 @@ def render_processing_tab(experiment_id: int) -> None:
     computations_block(experiment_id, params=params)
 
     with ui.row().classes('items-center gap-2 q-mt-md'):
-        ui.button(
+        btn_compute = ui.button(
             "Spočítat / přepočítat",
             icon="🔁",
             on_click=wrap_ui_handler(
@@ -1201,9 +1263,19 @@ def render_processing_tab(experiment_id: int) -> None:
                 },
             ),
         ).props("unelevated")
+        attach_tooltip(
+            btn_compute,
+            'Spočítat / přepočítat',
+            'Spustí výpočet vybraných modelů (včetně uložených konfigurovatelných ODE grafů).\n\nVýsledky se ukládají do DB a používají se i v záložce Grafy.',
+        )
 
         # Visible when settings/computation graph changed since last compute.
         dirty_badge = ui.badge('Změněno – přepočítejte', color='orange').props('outline')
+        attach_tooltip(
+            dirty_badge,
+            'Změněno',
+            'Něco se změnilo od posledního výpočtu (data, výběr tabulek, parametry nebo definice grafu).\n\nKlikněte na *Spočítat / přepočítat* pro aktualizaci výsledků.',
+        )
         dirty_badge.visible = False
     ui.separator()
     results_container = ui.column().classes("w-full gap-4")
@@ -1280,6 +1352,11 @@ def render_processing_tab(experiment_id: int) -> None:
                     with ui.row().classes('w-full items-center justify-between'):
                         ui.markdown(f"#### Výsledky pro {name}")
                         b = ui.badge('Změněno', color='orange').props('outline')
+                        attach_tooltip(
+                            b,
+                            'Změněno',
+                            'Výsledky tohoto modelu jsou zastaralé vůči aktuálním datům/nastavení nebo definici výpočtu.\n\nPo přepočtu se badge ztratí.',
+                        )
                         try:
                             b.visible = bool(stale is not None and is_model_stale(name, stale))
                         except Exception:
@@ -1307,6 +1384,11 @@ def render_processing_tab(experiment_id: int) -> None:
                     with ui.row().classes('w-full items-center justify-between'):
                         ui.markdown(f"#### Výsledky pro {name}")
                         b = ui.badge('Změněno', color='orange').props('outline')
+                        attach_tooltip(
+                            b,
+                            'Změněno',
+                            'Výsledky tohoto modelu jsou zastaralé vůči aktuálním datům/nastavení nebo definici výpočtu.\n\nPo přepočtu se badge ztratí.',
+                        )
                         try:
                             b.visible = bool(stale is not None and is_model_stale(name, stale))
                         except Exception:

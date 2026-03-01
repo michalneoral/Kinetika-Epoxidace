@@ -6,6 +6,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 from nicegui import ui
 
 from experimental_web.logging_setup import get_logger, TRACE
+from experimental_web.ui.utils.tooltips import attach_tooltip
 
 log = get_logger(__name__)
 
@@ -355,14 +356,41 @@ def create_graph_widget(state: GraphState, key: str, title: Optional[str] = None
     _EDGE_CALLBACKS[dom_id] = on_edge_click
 
     if title:
-        ui.label(title).classes('text-h6')
+        lbl_title = ui.label(title).classes('text-h6')
+        try:
+            attach_tooltip(
+                lbl_title,
+                str(title),
+                'Interaktivní editor vazeb mezi uzly (velišinami).\n\n'
+                'Klikem na hrany přepínáte režim: vypnuto → hlavní (mode=1) → kontrolní (mode=2).',
+            )
+        except Exception:
+            pass
 
-    ui.label('Klik na hrany: vypnuto → hlavní → kontrolní → ...').classes('text-body2 text-grey-7')
+    lbl_hint = ui.label('Klik na hrany: vypnuto → hlavní → kontrolní → ...').classes('text-body2 text-grey-7')
+    try:
+        attach_tooltip(
+            lbl_hint,
+            'Ovládání hran',
+            'Klikem na hranu cyklujete režimy: vypnuto → hlavní → kontrolní.\n\n'
+            'Kontrolní hrany (červené) se počítají separátně a výsledky se následně mergeují do jednoho grafu.',
+        )
+    except Exception:
+        pass
     ui.separator()
 
     mermaid_el = ui.mermaid(build_mermaid_full(), config={'securityLevel': 'loose'}).props(f'id={dom_id}').classes(
         'w-full'
     )
+    try:
+        attach_tooltip(
+            mermaid_el,
+            'Editor grafu',
+            'Klikněte na hrany mezi uzly a nastavte, zda jsou vypnuté, hlavní nebo kontrolní.\n\n'
+            'Číslování uzlů (1..N) je jen vizuální – názvy veličin se v datech nemění.',
+        )
+    except Exception:
+        pass
 
     wire_js_click_handlers()
 

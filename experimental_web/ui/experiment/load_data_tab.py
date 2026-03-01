@@ -11,6 +11,7 @@ from experimental_web.core.state import get_state
 from experimental_web.data.repositories import ExperimentFileRepository, TablePickRepository
 from experimental_web.domain.fame_epo import DEFAULT_EPO, DEFAULT_FAME, REQUIRED_EPO, REQUIRED_FAME, extract_df, extract_df_dict, validate_table
 from experimental_web.ui.utils.tables import sanitize_df_for_table
+from experimental_web.ui.utils.tooltips import attach_tooltip
 from experimental_web.ui.widgets.sticky_table import StickyTable
 from experimental_web.ui.widgets.styled_label import StyledLabel
 from experimental_web.logging_setup import get_logger
@@ -34,10 +35,19 @@ def render_load_data_tab(experiment_id: int) -> None:
     file_repo = ExperimentFileRepository(DB_PATH)
     pick_repo = TablePickRepository(DB_PATH)
 
-    ui.label("Krok 1: Nahrát Excel soubor").classes("text-subtitle1")
-    upload = ui.upload(label="Vyberte soubor", auto_upload=True, max_files=1, multiple=False)\
-        .props("accept=.xlsx,.xls")\
-        .tooltip("Soubor se uloží jako BLOB do SQLite. Nový soubor přepíše starý.")
+    step1 = ui.label("Krok 1: Nahrát Excel soubor").classes("text-subtitle1")
+    attach_tooltip(
+        step1,
+        "Nahrání vstupních dat",
+        "Nahrajte Excel (.xlsx/.xls) se zdrojovými daty experimentu. Po nahrání se soubor uloží do databáze a navazující kroky (tabulky/rychlosti/grafy) se označí jako změněné – je potřeba je přepočítat.",
+    )
+
+    upload = ui.upload(label="Vyberte soubor", auto_upload=True, max_files=1, multiple=False).props("accept=.xlsx,.xls")
+    attach_tooltip(
+        upload,
+        "Vybrat a nahrát Excel",
+        "Soubor se uloží jako BLOB do SQLite. Nový upload přepíše předchozí soubor pro tento experiment. Podporované formáty: .xlsx a .xls.",
+    )
     ui.separator()
 
     dynamic = ui.column().classes("w-full gap-4")
@@ -68,7 +78,12 @@ def render_load_data_tab(experiment_id: int) -> None:
     def render_preview(df_raw: pd.DataFrame, sheet: str, mount: ui.column) -> None:
         mount.clear()
         with mount:
-            ui.label(f"Krok 2: Náhled listu „{sheet}“").classes("text-subtitle1")
+            prev_lbl = ui.label(f"Krok 2: Náhled listu „{sheet}“").classes("text-subtitle1")
+            attach_tooltip(
+                prev_lbl,
+                "Náhled listu",
+                "Slouží jen pro orientaci při výběru oblastí. Zobrazuje se maximálně 30 řádků a 20 sloupců; výpočty ale používají celý list.",
+            )
             df_prev = df_raw.copy()
             if df_prev.shape[0] > 30:
                 df_prev = df_prev.iloc[:30, :]
@@ -91,14 +106,28 @@ def render_load_data_tab(experiment_id: int) -> None:
         r1,r2,c1,c2 = _load_pick(kind)
 
         with mount:
-            ui.label(title).classes("text-subtitle1")
+            pick_lbl = ui.label(title).classes("text-subtitle1")
+            attach_tooltip(
+                pick_lbl,
+                "Výběr oblasti v Excelu",
+                "Zadejte rozsah buněk (řádky/sloupce) pro vyříznutí tabulky. Indexování je 1‑based (1 = první řádek/sloupec v listu) a rozsah je včetně konců. Při změně se výběr uloží do DB a experiment se označí jako změněný.",
+            )
             status = StyledLabel("Upravte rozsah.", "info")
+            attach_tooltip(
+                status,
+                "Validace vyříznuté tabulky",
+                "Po každé změně rozsahu se tabulka zkontroluje proti povinným položkám (např. požadované sloupce/řádky pro FAME/EPO). Pokud něco chybí, zobrazí se seznam chybějících položek.",
+            )
 
             with ui.row().classes("q-gutter-md items-end"):
                 rs = ui.number("row_start", value=r1, min=1, step=1).props("dense")
+                attach_tooltip(rs, "row_start", "První řádek vybrané oblasti (1 = první řádek v listu).")
                 re_ = ui.number("row_end", value=r2, min=1, step=1).props("dense")
+                attach_tooltip(re_, "row_end", "Poslední řádek vybrané oblasti (včetně). Musí být ≥ row_start.")
                 cs = ui.number("col_start", value=c1, min=1, step=1).props("dense")
+                attach_tooltip(cs, "col_start", "První sloupec vybrané oblasti (1 = první sloupec v listu).")
                 ce = ui.number("col_end", value=c2, min=1, step=1).props("dense")
+                attach_tooltip(ce, "col_end", "Poslední sloupec vybrané oblasti (včetně). Musí být ≥ col_start.")
 
             table_box = ui.column().classes("w-full gap-2")
 
@@ -143,7 +172,12 @@ def render_load_data_tab(experiment_id: int) -> None:
             if not ef:
                 ui.label("Zatím není nahraný žádný Excel soubor.").classes("text-caption")
                 return
-            ui.label(f"Aktuální soubor: {ef.filename} ({ef.size_bytes} B)").classes("text-subtitle2")
+            cur = ui.label(f"Aktuální soubor: {ef.filename} ({ef.size_bytes} B)").classes("text-subtitle2")
+            attach_tooltip(
+                cur,
+                "Aktuální soubor v databázi",
+                "Toto je poslední nahraný Excel pro experiment. Soubor je uložen v DB; přepíše se dalším uploadem. Zvolený list se ukládá k souboru a používá se v dalších záložkách.",
+            )
 
             xls = load_excel()
             if not xls:
@@ -155,7 +189,12 @@ def render_load_data_tab(experiment_id: int) -> None:
             epo_box = ui.column().classes("w-full gap-2")
 
             with sheet_box:
-                ui.label("Krok 2: Vyberte list").classes("text-subtitle1")
+                sheet_lbl = ui.label("Krok 2: Vyberte list").classes("text-subtitle1")
+                attach_tooltip(
+                    sheet_lbl,
+                    "Výběr listu",
+                    "Vyberte list, ze kterého se budou brát tabulky a výpočty. Změna listu se uloží k souboru a označí experiment jako změněný.",
+                )
                 sheets = list(xls.sheet_names or [])
                 if not sheets:
                     ui.label("Sešit neobsahuje žádné listy.").classes("text-negative")
@@ -179,6 +218,7 @@ def render_load_data_tab(experiment_id: int) -> None:
                     render_pick("epo", df_raw, epo_box)
 
                 sel = ui.select(options=sheets, value=default_sheet, label="Listy", on_change=on_sheet_change).classes("w-96")
+                attach_tooltip(sel, "Seznam listů", "Výběrem listu se aktualizuje náhled a znovu se vyhodnotí výřezy (FAME/EPO).")
                 on_sheet_change(type("E", (), {"value": sel.value})())
 
             preview_box

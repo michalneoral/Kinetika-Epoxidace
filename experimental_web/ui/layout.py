@@ -10,6 +10,7 @@ from experimental_web.core.state import get_state
 from experimental_web.data.repositories import SettingsRepository
 from experimental_web.logging_setup import get_logger, is_debug_enabled
 from experimental_web.ui.debug_panel import create_debug_log_dialog
+from experimental_web.ui.utils.tooltips import attach_tooltip
 
 
 log = get_logger(__name__)
@@ -111,12 +112,25 @@ def frame(title: str):
         ).classes('text-h6 text-white')
         ui.space()
 
-        ui.button("Domů", on_click=lambda: (log.info('[UI] nav: home'), ui.navigate.to("/"))).props("flat text-color=white")
+        btn_home = ui.button(
+            "Domů",
+            on_click=lambda: (log.info('[UI] nav: home'), ui.navigate.to("/")),
+        ).props("flat text-color=white")
+        attach_tooltip(
+            btn_home,
+            "Domů",
+            "Přejde na úvodní stránku se seznamem experimentů.",
+        )
 
         if get_state().current_experiment_id is not None:
-            ui.button("Zavřít experiment", on_click=_close_experiment).props("flat text-color=white")
+            btn_close = ui.button("Zavřít experiment", on_click=_close_experiment).props("flat text-color=white")
+            attach_tooltip(
+                btn_close,
+                "Zavřít experiment",
+                "Uzavře aktuálně otevřený experiment a vrátí tě domů. Data v databázi zůstanou zachovaná.",
+            )
 
-        ui.button(
+        btn_current = ui.button(
             "Aktuální experiment",
             on_click=lambda: (
                 log.info('[UI] nav: experiment'),
@@ -125,15 +139,28 @@ def frame(title: str):
                 else ui.notify("Žádný experiment není otevřen", type="warning")
             ),
         ).props("flat text-color=white")
+        attach_tooltip(
+            btn_current,
+            "Aktuální experiment",
+            "Otevře hlavní stránku experimentu (záložky: Načtení dat, Tabulky, Rychlosti, Grafy, …). Pokud není nic otevřeno, zobrazí se varování.",
+        )
 
         # Debug log button (only in debug mode)
         if debug_dialog is not None and is_debug_enabled():
-            ui.button(icon='bug_report', on_click=lambda: (log.debug('[UI] open debug dialog'), debug_dialog.open()))\
-                .props('flat fab-mini color=white')\
-                .tooltip('Debug log')
+            btn_debug = ui.button(
+                icon='bug_report',
+                on_click=lambda: (log.debug('[UI] open debug dialog'), debug_dialog.open()),
+            ).props('flat fab-mini color=white')
+
+            attach_tooltip(
+                btn_debug,
+                "Debug log",
+                "Otevře panel s interními logy aplikace. Hodí se při ladění a při hlášení chyb. "
+                "Tlačítko je viditelné jen v debug režimu.",
+            )
 
         # --- Theme controls (instant, no reload) ---
-        with ui.element().tooltip("Přepnout režim: dark → auto → light (okamžitě)"):
+        with ui.element() as theme_controls:
             # Pattern copied/adapted from kinetika_webapp.py
             ui.button(icon="dark_mode", on_click=lambda: _set_dark_value(dark, None)) \
                 .props("flat fab-mini color=white") \
@@ -145,8 +172,19 @@ def frame(title: str):
                 .props("flat fab-mini color=white") \
                 .bind_visibility_from(dark, "value", lambda mode: mode is None)
 
-        ui.button("O aplikaci", on_click=lambda: ui.notify(f"Data: {APP_DIR} | DB: {DB_PATH}")).props(
+        attach_tooltip(
+            theme_controls,
+            "Vzhled (dark/auto/light)",
+            "Přepíná režim zobrazení: tmavý / automatický / světlý. Změna se projeví okamžitě bez reloadu a uloží se pro tohoto uživatele.",
+        )
+
+        btn_about = ui.button("O aplikaci", on_click=lambda: ui.notify(f"Data: {APP_DIR} | DB: {DB_PATH}")).props(
             "flat text-color=white"
+        )
+        attach_tooltip(
+            btn_about,
+            "O aplikaci",
+            "Zobrazí základní info o běhu aplikace (umístění dat a cesta k databázi).",
         )
 
     with ui.column().classes("w-full q-pa-md"):

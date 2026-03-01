@@ -30,6 +30,7 @@ from experimental_web.ui.utils.plots import export_all_figures_as_zip, update_pl
 from experimental_web.ui.styled_elements.custom_color_picker import ColorPickerButton
 from experimental_web.ui.widgets.styled_label import StyledLabel
 from experimental_web.ui.utils.staleness import compute_staleness, is_model_stale
+from experimental_web.ui.utils.tooltips import attach_tooltip
 
 
 log = get_logger(__name__)
@@ -532,8 +533,10 @@ def _build_table_processor(
 
     for df in (fame_df, epo_df):
         for col in df.columns[1:]:
-            # best-effort
-            df[col] = pd.to_numeric(df[col], errors='ignore')
+            # Pandas supports only errors={'raise','coerce'} for to_numeric.
+            # We want a best-effort conversion for plotting/analysis,
+            # therefore we coerce invalid values to NaN.
+            df[col] = pd.to_numeric(df[col], errors='coerce')
 
     processor = TableProcessor(fame_df=fame_df, epo_df=epo_df)
     processor.process()
@@ -1354,12 +1357,31 @@ def _render_graphs_tab_body(experiment_id: int) -> None:
 
     with ui.column().classes('w-full gap-2'):
         with ui.row().classes('w-full items-center justify-between'):
-            ui.label('Grafy').classes('text-h6')
-            ui.label(f"t_shift použité ve výpočtu: {used_t_shift_f:.6g}").classes('text-caption text-grey-7')
+            lbl_title = ui.label('Grafy').classes('text-h6')
+            attach_tooltip(
+                lbl_title,
+                'Grafy',
+                'Interaktivní vykreslení výsledků posledního výpočtu.\n\n'
+                'Nastavení křivek (barvy, popisky, osy…) se ukládá zvlášť a nevyžaduje přepočet modelů.',
+            )
+
+            lbl_tshift = ui.label(f"t_shift použité ve výpočtu: {used_t_shift_f:.6g}").classes('text-caption text-grey-7')
+            attach_tooltip(
+                lbl_tshift,
+                't_shift z posledního běhu',
+                'Časový posun, který byl skutečně použit při posledním výpočtu v záložce Zpracování.\n\n'
+                'Používá se i při přegenerování grafů pro konzistenci.',
+            )
 
         try:
             if stale is not None and (stale.global_changed or any(stale.custom_changed.values())):
-                ui.badge('Změněno od posledního výpočtu – přepočítejte v záložce „rychlosti“', color='orange').props('outline')
+                bchg = ui.badge('Změněno od posledního výpočtu – přepočítejte v záložce „rychlosti“', color='orange').props('outline')
+                attach_tooltip(
+                    bchg,
+                    'Změněno',
+                    'Od posledního běhu se změnila data, výběry tabulek nebo definice výpočtů.\n\n'
+                    'Grafy stále zobrazují poslední uložené výsledky – pro nové výsledky spusťte přepočet v Zpracování.',
+                )
         except Exception:
             pass
 
@@ -1368,11 +1390,22 @@ def _render_graphs_tab_body(experiment_id: int) -> None:
             return
 
         with ui.row().classes('w-full items-center gap-2'):
-            ui.button(
+            btn_export = ui.button(
                 'Export PNG/PDF/SVG',
                 on_click=lambda: _open_export_dialog(plotters, configs),
             ).props('unelevated').classes('bg-secondary text-white')
-            ui.label('Tip: změny nastavení se promítají do exportu.').classes('text-caption text-grey-6')
+            attach_tooltip(
+                btn_export,
+                'Export',
+                'Vyexportuje všechny grafy do ZIPu ve zvoleném formátu (PNG/PDF/SVG).\n\n'
+                'Použije aktuální nastavení každého grafu (osy, legenda, barvy, anotace).',
+            )
+            lbl_tip = ui.label('Tip: změny nastavení se promítají do exportu.').classes('text-caption text-grey-6')
+            attach_tooltip(
+                lbl_tip,
+                'Ukládání nastavení',
+                'Změny v nastavení grafů se ukládají automaticky do DB a použijí se i při exportu.',
+            )
 
         ui.separator()
 
@@ -1417,17 +1450,35 @@ def _render_graphs_tab_body(experiment_id: int) -> None:
 
             with ui.card().classes('w-full'):
                 with ui.row().classes('w-full items-center justify-between'):
-                    ui.markdown(f"### {name}")
+                    hdr = ui.markdown(f"### {name}")
+                    attach_tooltip(
+                        hdr,
+                        f'Graf: {name}',
+                        'Kliknutím otevřete nastavení grafu (vpravo).\n\n'
+                        'Pokud se podaří zrekonstruovat model, graf se vykresluje znovu. Jinak se použije uložený PNG z posledního běhu.',
+                    )
                     try:
                         b = ui.badge('Změněno', color='orange').props('outline')
                         b.visible = bool(stale is not None and is_model_stale(name, stale))
+                        attach_tooltip(
+                            b,
+                            'Změněno',
+                            'Nastavení nebo definice tohoto modelu se změnily od posledního přepočtu.\n\n'
+                            'Zpracování (Rychlosti) uloží nové konstanty a grafy.',
+                        )
                     except Exception:
                         pass
 
                 consts = list(entry.get('constants') or [])
                 if consts:
                     with ui.column().classes('w-full'):
-                        ui.label('Konstanty:').classes('text-subtitle2')
+                        lbl_c = ui.label('Konstanty:').classes('text-subtitle2')
+                        attach_tooltip(
+                            lbl_c,
+                            'Konstanty (k)',
+                            'Hodnoty konstant uložené z posledního fitu.\n\n'
+                            'Tyto hodnoty se používají při přegenerování grafu bez nového fitování.',
+                        )
                         for c in consts:
                             try:
                                 ui.markdown(
@@ -1446,6 +1497,12 @@ def _render_graphs_tab_body(experiment_id: int) -> None:
                                 cross=False,
                             ).classes('w-full max-w-5xl [&>img]:w-full [&>svg]:w-full')
                             plot_images[name] = img
+                            attach_tooltip(
+                                img,
+                                'Graf',
+                                'Zobrazení simulace/modelu.\n\n'
+                                'Pokud v nastavení křivky zvolíte „📍 Umístit kliknutím“, další klik do grafu nastaví pozici textu.',
+                            )
                         else:
                             png = entry.get('plot_png')
                             if png:
@@ -1463,7 +1520,14 @@ def _render_graphs_tab_body(experiment_id: int) -> None:
                             if reason:
                                 ui.label(f"Důvod (debug): {reason}").classes('text-caption text-grey-6')
                         else:
-                            with ui.expansion('⚙️ Nastavení grafu', value=False):
+                            exp = ui.expansion('⚙️ Nastavení grafu', value=False)
+                            attach_tooltip(
+                                exp,
+                                'Nastavení grafu',
+                                'Úprava vzhledu grafu (osy, legenda, barvy, popisky, anotace).\n\n'
+                                'Změny se ukládají automaticky a nevyžadují přepočet modelů.',
+                            )
+                            with exp:
                                 _render_controls_for(
                                     name,
                                     cfg,
@@ -1586,7 +1650,13 @@ def _render_controls_for(
         with ui.tabs().props('dense arrows outside-arrows mobile-arrows').classes('q-pa-none') as tabs:
             # In NiceGUI the tab's *name* is the identifier used by ui.tab_panels.
             # The `label` is what the user sees. We therefore use a stable name and a human label.
-            ui.tab(name='graph', label='Graf')
+            t_graph = ui.tab(name='graph', label='Graf')
+            attach_tooltip(
+                t_graph,
+                'Graf',
+                'Globální nastavení grafu: nadpis, legenda, velikost, osy a rozsahy.\n\n'
+                'Změny se projeví okamžitě a ukládají se automaticky.',
+            )
             for idx, _cs in enumerate(cfg.curve_styles):
                 orig = colnames[idx] if idx < len(colnames) else ''
                 tab_title = f'Křivka {idx + 1}' + (f' - {orig}' if orig else '')
@@ -1595,9 +1665,14 @@ def _render_controls_for(
                 try:
                     t.classes('curve-tab')
                     t.style(f'--curve-color: {cfg.curve_styles[idx].color};')
-                    t.tooltip(tab_title)
                 except Exception:
                     pass
+                attach_tooltip(
+                    t,
+                    tab_title,
+                    'Nastavení konkrétní křivky: barva, popisek, styl čáry, marker a anotace textem.\n\n'
+                    'Původní název (ze sloupce tabulky) je uveden v záhlaví panelu.',
+                )
                 curve_tabs.append(t)
 
     with ui.tab_panels(tabs, value='graph').classes('w-full'):
@@ -1606,51 +1681,89 @@ def _render_controls_for(
             with ui.row().classes('w-full flex-wrap gap-3 items-center'):
                 show_title = ui.switch('Nadpis', value=cfg.show_title,
                                        on_change=lambda e: (setattr(cfg, 'show_title', bool(e.value)), replot()))
+                attach_tooltip(
+                    show_title,
+                    'Nadpis',
+                    'Zapne/vypne zobrazení nadpisu grafu.\n\n'
+                    'Text nadpisu nastavíte v poli vedle.',
+                )
                 title = ui.input('Text nadpisu', value=cfg.title,
                                  on_change=lambda e: (setattr(cfg, 'title', str(e.value)), replot())).classes('w-72')
+                attach_tooltip(
+                    title,
+                    'Text nadpisu',
+                    'Text, který se zobrazí nahoře v grafu.\n\n'
+                    'Použije se také jako název při exportu (pokud exportní formát podporuje metadatový titulek).',
+                )
                 title.bind_enabled_from(show_title, 'value')
 
             with ui.row().classes('w-full flex-wrap gap-3 items-center'):
-                ui.select(
+                sel_leg = ui.select(
                     label='Legenda',
                     options=['both', 'single', 'components_only', 'None'],
                     value=cfg.legend_mode,
                     on_change=lambda e: (setattr(cfg, 'legend_mode', str(e.value)), replot()),
                 ).classes('w-64')
-                ui.number('Šířka (inch)', value=cfg.fig_width, min=1, max=20, step=0.5,
+                attach_tooltip(
+                    sel_leg,
+                    'Legenda',
+                    'Režim legendy v grafu.\n\n'
+                    '*components_only* obvykle zobrazí jen složky (bez duplicitních názvů).',
+                )
+                num_w = ui.number('Šířka (inch)', value=cfg.fig_width, min=1, max=20, step=0.5,
                           on_change=lambda e: (setattr(cfg, 'fig_width', float(e.value)), replot())).classes('w-40')
-                ui.number('Výška (inch)', value=cfg.fig_height, min=1, max=20, step=0.5,
+                attach_tooltip(num_w, 'Šířka', 'Šířka výsledné figury (v palcích).\n\nPoužívá se i pro export.')
+                num_h = ui.number('Výška (inch)', value=cfg.fig_height, min=1, max=20, step=0.5,
                           on_change=lambda e: (setattr(cfg, 'fig_height', float(e.value)), replot())).classes('w-40')
+                attach_tooltip(num_h, 'Výška', 'Výška výsledné figury (v palcích).\n\nPoužívá se i pro export.')
 
             with ui.row().classes('w-full flex-wrap gap-3 items-center'):
-                ui.input('Popisek osy X', value=cfg.xlabel,
+                inp_xl = ui.input('Popisek osy X', value=cfg.xlabel,
                          on_change=lambda e: (setattr(cfg, 'xlabel', str(e.value)), replot())).classes('w-56')
-                ui.input('Popisek osy Y', value=cfg.ylabel,
+                attach_tooltip(inp_xl, 'Osa X', 'Popisek osy X (čas apod.).')
+                inp_yl = ui.input('Popisek osy Y', value=cfg.ylabel,
                          on_change=lambda e: (setattr(cfg, 'ylabel', str(e.value)), replot())).classes('w-56')
+                attach_tooltip(inp_yl, 'Osa Y', 'Popisek osy Y (koncentrace apod.).')
 
             with ui.row().classes('w-full flex-wrap gap-3 items-center'):
-                ui.select(
+                sel_x = ui.select(
                     label='Osa X',
                     options=['default', 'auto', 'all_data', 'manual', 'None'],
                     value=cfg.xlim_mode,
                     on_change=lambda e: (setattr(cfg, 'xlim_mode', str(e.value)), replot()),
                 ).classes('w-40')
-                ui.number('X min', value=cfg.xlim_min or 0.0, min=0, step=1.0,
+                attach_tooltip(
+                    sel_x,
+                    'Rozsah osy X',
+                    'Zvolte, jak se určí rozsah osy X.\n\n'
+                    '*manual* použije X min / X max, *all_data* se přizpůsobí datům.',
+                )
+                num_xmin = ui.number('X min', value=cfg.xlim_min or 0.0, min=0, step=1.0,
                           on_change=lambda e: (setattr(cfg, 'xlim_min', float(e.value)), replot())).classes('w-32')
-                ui.number('X max', value=cfg.xlim_max or 0.0, min=0, step=1.0,
+                attach_tooltip(num_xmin, 'X min', 'Spodní mez osy X (jen pro manual).')
+                num_xmax = ui.number('X max', value=cfg.xlim_max or 0.0, min=0, step=1.0,
                           on_change=lambda e: (setattr(cfg, 'xlim_max', float(e.value)), replot())).classes('w-32')
+                attach_tooltip(num_xmax, 'X max', 'Horní mez osy X (jen pro manual).')
 
             with ui.row().classes('w-full flex-wrap gap-3 items-center'):
-                ui.select(
+                sel_y = ui.select(
                     label='Osa Y',
                     options=['default', 'manual', 'None'],
                     value=cfg.ylim_mode,
                     on_change=lambda e: (setattr(cfg, 'ylim_mode', str(e.value)), replot()),
                 ).classes('w-40')
-                ui.number('Y min', value=cfg.ylim_min or 0.0, min=0, step=0.05,
+                attach_tooltip(
+                    sel_y,
+                    'Rozsah osy Y',
+                    'Zvolte, jak se určí rozsah osy Y.\n\n'
+                    '*manual* použije Y min / Y max.',
+                )
+                num_ymin = ui.number('Y min', value=cfg.ylim_min or 0.0, min=0, step=0.05,
                           on_change=lambda e: (setattr(cfg, 'ylim_min', float(e.value)), replot())).classes('w-32')
-                ui.number('Y max', value=cfg.ylim_max or 1.0, min=0, step=0.05,
+                attach_tooltip(num_ymin, 'Y min', 'Spodní mez osy Y (jen pro manual).')
+                num_ymax = ui.number('Y max', value=cfg.ylim_max or 1.0, min=0, step=0.05,
                           on_change=lambda e: (setattr(cfg, 'ylim_max', float(e.value)), replot())).classes('w-32')
+                attach_tooltip(num_ymax, 'Y max', 'Horní mez osy Y (jen pro manual).')
 
         # --- Per-curve settings ---
         for idx, cs in enumerate(cfg.curve_styles):
@@ -1683,46 +1796,78 @@ def _render_controls_for(
                         ),
                     )
                     picker.bind_color(cs, 'color')
-                    ui.input('Popisek', value=cs.label,
+                    attach_tooltip(
+                        picker,
+                        'Barva křivky',
+                        'Změní barvu této křivky.\n\n'
+                        'Barevný marker v záhlaví tabu se aktualizuje okamžitě.',
+                    )
+                    inp_lbl = ui.input('Popisek', value=cs.label,
                              on_change=lambda e, _cs=cs: (setattr(_cs, 'label', str(e.value)), replot())).classes('w-56')
-                    ui.select(
+                    attach_tooltip(inp_lbl, 'Popisek', 'Text v legendě pro tuto křivku (volitelné).')
+                    sel_ls = ui.select(
                         label='Čára',
                         options=['solid', 'dashed', 'dashdot', 'dotted'],
                         value=cs.linestyle,
                         on_change=lambda e, _cs=cs: (setattr(_cs, 'linestyle', str(e.value)), replot()),
                     ).classes('w-36')
-                    ui.number('Tloušťka', value=cs.linewidth, min=0.1, step=0.1,
+                    attach_tooltip(sel_ls, 'Styl čáry', 'Zvolte typ čáry pro tuto křivku.')
+                    num_lw = ui.number('Tloušťka', value=cs.linewidth, min=0.1, step=0.1,
                               on_change=lambda e, _cs=cs: (setattr(_cs, 'linewidth', float(e.value)), replot())).classes('w-28')
-                    ui.select(
+                    attach_tooltip(num_lw, 'Tloušťka', 'Tloušťka čáry (v bodech).')
+                    sel_m = ui.select(
                         label='Marker',
                         options=['o', 's', '^', 'v', 'x', '+', '*', 'None'],
                         value=cs.marker,
                         on_change=lambda e, _cs=cs: (setattr(_cs, 'marker', str(e.value)), replot()),
                     ).classes('w-28')
-                    ui.number('Velikost', value=cs.markersize, min=1, step=0.5,
+                    attach_tooltip(sel_m, 'Marker', 'Tvar značek bodů. Hodnota *None* značky vypne.')
+                    num_ms = ui.number('Velikost', value=cs.markersize, min=1, step=0.5,
                               on_change=lambda e, _cs=cs: (setattr(_cs, 'markersize', float(e.value)), replot())).classes('w-28')
+                    attach_tooltip(num_ms, 'Velikost markeru', 'Velikost značek bodů.')
 
                 ui.separator().classes('q-mt-sm q-mb-sm')
-                ui.label('Anotace (text v grafu)').classes('text-caption text-grey-7')
+                lbl_ann = ui.label('Anotace (text v grafu)').classes('text-caption text-grey-7')
+                attach_tooltip(
+                    lbl_ann,
+                    'Anotace',
+                    'Volitelný text přímo v grafu (např. poznámka, označení bodu).\n\n'
+                    'Pozici můžete zadat ručně nebo ji „chytit“ kliknutím do grafu.',
+                )
                 with ui.row().classes('w-full flex-wrap gap-3 items-center'):
-                    ui.switch('Zobrazit text', value=cs.additional_text_enabled,
+                    sw_txt = ui.switch('Zobrazit text', value=cs.additional_text_enabled,
                               on_change=lambda e, _cs=cs: (setattr(_cs, 'additional_text_enabled', bool(e.value)), replot()))
-                    ui.number('Velikost písma', value=cs.additional_text_size, min=6, max=40, step=1,
+                    attach_tooltip(sw_txt, 'Zobrazit text', 'Zapne/vypne zobrazení anotace.')
+                    num_fs = ui.number('Velikost písma', value=cs.additional_text_size, min=6, max=40, step=1,
                               on_change=lambda e, _cs=cs: (setattr(_cs, 'additional_text_size', float(e.value)), replot())).classes('w-40')
-                    ui.button('📍 Umístit kliknutím', on_click=lambda _=None, i=idx: arm_pick(i)).props('outline')
+                    attach_tooltip(num_fs, 'Velikost písma', 'Velikost písma anotace v bodech.')
+                    btn_pick = ui.button('📍 Umístit kliknutím', on_click=lambda _=None, i=idx: arm_pick(i)).props('outline')
+                    attach_tooltip(
+                        btn_pick,
+                        'Umístit kliknutím',
+                        'Po stisknutí klikněte do grafu vlevo – pozice textu se nastaví podle místa kliknutí.',
+                    )
                     if is_pending(idx):
                         ui.label('čekám na klik do grafu…').classes('text-caption text-orange-9')
 
                 # For compactness we use a single-line input. Use "\\n" to insert line breaks.
-                ui.input('Text (\\n pro nový řádek)', value=cs.additional_text_text,
+                inp_txt = ui.input('Text (\\n pro nový řádek)', value=cs.additional_text_text,
                          on_change=lambda e, _cs=cs: (setattr(_cs, 'additional_text_text', str(e.value)), replot()))\
                     .classes('w-full')
+                attach_tooltip(
+                    inp_txt,
+                    'Text anotace',
+                    'Text, který se vykreslí do grafu.\n\n'
+                    'Použijte „\\n“ pro nový řádek (víceřádkový text).',
+                )
 
                 with ui.row().classes('w-full flex-wrap gap-3 items-center'):
-                    ui.number('X', value=cs.additional_text_x, step=1.0,
+                    num_ax = ui.number('X', value=cs.additional_text_x, step=1.0,
                               on_change=lambda e, _cs=cs: (setattr(_cs, 'additional_text_x', float(e.value)), replot())).classes('w-32')
-                    ui.number('Y', value=cs.additional_text_y, step=0.05,
+                    attach_tooltip(num_ax, 'X', 'Souřadnice X anotace v datových souřadnicích.')
+                    num_ay = ui.number('Y', value=cs.additional_text_y, step=0.05,
                               on_change=lambda e, _cs=cs: (setattr(_cs, 'additional_text_y', float(e.value)), replot())).classes('w-32')
+                    attach_tooltip(num_ay, 'Y', 'Souřadnice Y anotace v datových souřadnicích.')
 
 
 def _open_export_dialog(plotters: dict[str, AdvancedPlotter], configs: dict[str, GraphConfig]) -> None:
@@ -1734,8 +1879,15 @@ def _open_export_dialog(plotters: dict[str, AdvancedPlotter], configs: dict[str,
         await export_all_figures_as_zip(plotters, configs, save_format=fmt)
 
     with ui.dialog() as dialog, ui.card():
-        ui.label('Export grafů').classes('text-h6')
-        ui.label('Vyberte formát:')
+        lbl = ui.label('Export grafů').classes('text-h6')
+        attach_tooltip(
+            lbl,
+            'Export grafů',
+            'Vygeneruje všechny grafy z aktuálních nastavení a zabalí je do ZIPu.\n\n'
+            'Volba formátu ovlivní kvalitu a použitelnost (PDF/SVG jsou vektorové).',
+        )
+        lbl2 = ui.label('Vyberte formát:')
+        attach_tooltip(lbl2, 'Formát', 'Zvolte výstupní formát pro všechny grafy v exportu.')
         with ui.row().classes('gap-2'):
             async def export_png():
                 dialog.close()
@@ -1749,8 +1901,11 @@ def _open_export_dialog(plotters: dict[str, AdvancedPlotter], configs: dict[str,
                 dialog.close()
                 await do_export('svg')
 
-            ui.button('PNG', on_click=export_png)
-            ui.button('PDF', on_click=export_pdf)
-            ui.button('SVG', on_click=export_svg)
+            b_png = ui.button('PNG', on_click=export_png)
+            attach_tooltip(b_png, 'PNG', 'Rastrový obrázek (dobré pro prezentace, rychlé sdílení).')
+            b_pdf = ui.button('PDF', on_click=export_pdf)
+            attach_tooltip(b_pdf, 'PDF', 'Vektorový výstup (vhodné pro tisk, publikace).')
+            b_svg = ui.button('SVG', on_click=export_svg)
+            attach_tooltip(b_svg, 'SVG', 'Vektorový obrázek (dobré pro editaci v grafických nástrojích).')
         ui.button('Zavřít', on_click=dialog.close).props('flat')
         dialog.open()

@@ -6,6 +6,8 @@ from typing import Protocol, Optional, Any
 
 from nicegui import ui
 
+from experimental_web.ui.utils.tooltips import attach_tooltip
+
 
 class Item(Protocol):
     title: str
@@ -77,6 +79,32 @@ class Column(ui.column):
 
         self.classes("dd-column w-72 p-4 rounded shadow-2 gap-2")
 
+        # Tooltips inside the editor (delayed + only when the mouse is idle)
+        try:
+            if str(name) == 'Použitá data':
+                attach_tooltip(
+                    self,
+                    'Použitá data',
+                    'Sloupce použité pro fit a výpočet ODE.\n\n'
+                    'Tahem měníte pořadí i výběr; dvojklikem přesunete sloupec na druhou stranu. '
+                    'Pořadí určuje pořadí uzlů (číslování 1..N je jen UI).',
+                )
+            elif str(name) == 'Nepoužitá data':
+                attach_tooltip(
+                    self,
+                    'Nepoužitá data',
+                    'Sloupce, které se do fitu neberou.\n\n'
+                    'Přesuňte sem vše, co nechcete počítat (drag & drop nebo dvojklik).',
+                )
+            else:
+                attach_tooltip(
+                    self,
+                    str(name),
+                    'Drag & drop z karet nebo dvojklikem přesouvejte sloupce mezi seznamy.',
+                )
+        except Exception:
+            pass
+
         self.on("dragover.prevent", self.highlight)
         self.on("dragleave", self.unhighlight)
         self.on("drop", self.drop_on_column)
@@ -124,7 +152,26 @@ class Card(ui.card):
         self._on_drop = on_drop
 
         with self.props("draggable").classes("dd-card relative w-full cursor-pointer p-2"):
-            ui.label(item.title)
+            lbl = ui.label(item.title)
+
+        # Tooltip on the whole card (and label as fallback)
+        try:
+            attach_tooltip(
+                self,
+                f'Sloupec: {item.title}',
+                'Tahem přesuňte sloupec do druhého seznamu nebo změňte pořadí.\n\n'
+                'Dvojklik = rychlý přesun na druhou stranu.',
+            )
+        except Exception:
+            try:
+                attach_tooltip(
+                    lbl,
+                    f'Sloupec: {item.title}',
+                    'Tahem přesuňte sloupec do druhého seznamu nebo změňte pořadí.\n\n'
+                    'Dvojklik = rychlý přesun na druhou stranu.',
+                )
+            except Exception:
+                pass
 
         self.on("dragstart", self.handle_dragstart)
         self.on("dblclick", self.handle_double_click)
