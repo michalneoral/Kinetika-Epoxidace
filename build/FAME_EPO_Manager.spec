@@ -48,6 +48,9 @@ if os.path.exists(_favicon):
 # pystray loads platform backends dynamically; keep them as hidden imports.
 hiddenimports += ['pystray', 'pystray._win32']
 
+# Matplotlib optional backends used by export (PDF/SVG).
+hiddenimports += ['matplotlib.backends.backend_pdf', 'matplotlib.backends.backend_svg']
+
 # If you hit a missing-module error at runtime, add it here.
 # Example:
 # hiddenimports += ['some_dynamic_imported_module']

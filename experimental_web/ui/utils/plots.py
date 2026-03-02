@@ -10,6 +10,16 @@ import os
 import datetime
 import asyncio
 
+# NOTE (PyInstaller): PDF/SVG export requires optional Matplotlib backends.
+# In frozen builds these backends may not be collected automatically unless
+# they are imported somewhere in the code. Import them best-effort here so
+# export works in packaged EXE.
+try:  # pragma: no cover
+    import matplotlib.backends.backend_pdf  # noqa: F401
+    import matplotlib.backends.backend_svg  # noqa: F401
+except Exception:
+    pass
+
 
 def update_plot_image(fig, image_element):
     """Render matplotlib figure as PNG and set it as data URL on a NiceGUI (interactive_)image.

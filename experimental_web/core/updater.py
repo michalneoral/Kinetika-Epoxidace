@@ -21,6 +21,7 @@ import subprocess
 import tempfile
 import time
 import sys
+import traceback
 from dataclasses import dataclass
 from typing import Any
 from urllib.request import Request, urlopen
@@ -34,10 +35,23 @@ except Exception:  # pragma: no cover
 
 from experimental_web.core.version import __version__
 from experimental_web.core.config import UPDATE_OWNER, UPDATE_REPO
+from experimental_web.core.paths import APP_DIR
 
 
 
 TIMEOUT_S = 10
+
+
+def _log(msg: str) -> None:
+    """Append a short line to the updater log in the user data directory."""
+    try:
+        log_path = APP_DIR / 'update.log'
+        ts = time.strftime('%Y-%m-%d %H:%M:%S')
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, 'a', encoding='utf-8', errors='ignore') as f:
+            f.write(f'[{ts}] {msg}\n')
+    except Exception:
+        return
 
 
 def _env(name: str, default: str) -> str:
@@ -107,6 +121,13 @@ def _parse_checksums_file(text: str) -> dict[str, str]:
 def _get_latest_release() -> dict[str, Any]:
     url = f'https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest'
     return _http_get_json(url)
+
+
+def _download_dir() -> str:
+    """A persistent download directory (avoids temp cleanup races)."""
+    d = APP_DIR / 'updates'
+    d.mkdir(parents=True, exist_ok=True)
+    return str(d)
 
 
 def _pick_windows_installer_asset(release: dict[str, Any]) -> tuple[_Asset | None, _Asset | None]:
@@ -181,7 +202,10 @@ def check_for_updates(interactive: bool = True) -> bool:
         return False
 
     try:
+        _log(f'Interactive update check started (current={__version__}).')
         release = _get_latest_release()
+        if isinstance(release, dict) and release.get('message'):
+            _log(f"GitHub API message: {release.get('message')}")
         tag = str(release.get('tag_name', '')).lstrip('v').strip()
         if not tag:
             if interactive:
@@ -201,34 +225,43 @@ def check_for_updates(interactive: bool = True) -> bool:
                 _message_box('Aktualizace', 'V releasu nebyl nalezen instalační soubor (Setup.exe).')
             return False
 
-        with tempfile.TemporaryDirectory() as td:
-            exe_path = os.path.join(td, exe_asset.name)
-            _download(exe_asset.url, exe_path)
+        td = _download_dir()
+        exe_path = os.path.join(td, exe_asset.name)
+        _log(f'Downloading installer: {exe_asset.url} -> {exe_path}')
+        _download(exe_asset.url, exe_path)
 
             # optional checksum verification
-            if checks_asset:
-                checks_path = os.path.join(td, checks_asset.name)
-                _download(checks_asset.url, checks_path)
-                checks_txt = open(checks_path, 'r', encoding='utf-8', errors='ignore').read()
-                checks = _parse_checksums_file(checks_txt)
-                expected = checks.get(exe_asset.name)
-                if expected:
-                    got = _sha256_file(exe_path)
-                    if got != expected:
-                        if interactive:
-                            _message_box('Aktualizace', 'Kontrola integrity selhala (SHA256 nesouhlasí).')
-                        return False
+        if checks_asset:
+            checks_path = os.path.join(td, checks_asset.name)
+            _log(f'Downloading checksums: {checks_asset.url} -> {checks_path}')
+            _download(checks_asset.url, checks_path)
+            checks_txt = open(checks_path, 'r', encoding='utf-8', errors='ignore').read()
+            checks = _parse_checksums_file(checks_txt)
+            expected = checks.get(exe_asset.name)
+            if expected:
+                got = _sha256_file(exe_path)
+                if got != expected:
+                    _log('Checksum mismatch for installer download.')
+                    if interactive:
+                        _message_box('Aktualizace', 'Kontrola integrity selhala (SHA256 nesouhlasí).')
+                    return False
 
-            ok = _run_installer_silently(exe_path)
-            if not ok:
-                if interactive:
-                    _message_box('Aktualizace', 'Nepodařilo se spustit instalátor aktualizace.')
-                return False
-
+        ok = _run_installer_silently(exe_path)
+        if not ok:
+            _log('Failed to launch installer.')
             if interactive:
-                _message_box('Aktualizace', f'Nalezena nová verze {tag}. Spouštím instalátor…')
-            return True
+                _message_box('Aktualizace', 'Nepodařilo se spustit instalátor aktualizace.')
+            return False
+
+        _log(f'Installer launched for update to {tag}.')
+        if interactive:
+            _message_box('Aktualizace', f'Nalezena nová verze {tag}. Spouštím instalátor…')
+        # The interactive checker is usually invoked from a shortcut; exit so the installer
+        # can replace files without the checker holding resources.
+        time.sleep(0.5)
+        os._exit(0)
     except Exception:
+        _log('Interactive update check failed: ' + traceback.format_exc().strip())
         if interactive:
             _message_box('Aktualizace', 'Kontrola aktualizací selhala (síť / GitHub API).')
         return False
@@ -240,7 +273,10 @@ def maybe_update_in_background() -> None:
         return
 
     try:
+        _log(f'Background update check started (current={__version__}).')
         release = _get_latest_release()
+        if isinstance(release, dict) and release.get('message'):
+            _log(f"GitHub API message: {release.get('message')}")
         tag = str(release.get('tag_name', '')).lstrip('v').strip()
         if not tag:
             return
@@ -254,25 +290,30 @@ def maybe_update_in_background() -> None:
         if not exe_asset:
             return
 
-        with tempfile.TemporaryDirectory() as td:
-            exe_path = os.path.join(td, exe_asset.name)
-            _download(exe_asset.url, exe_path)
+        td = _download_dir()
+        exe_path = os.path.join(td, exe_asset.name)
+        _log(f'Downloading installer: {exe_asset.url} -> {exe_path}')
+        _download(exe_asset.url, exe_path)
 
-            # optional checksum verification
-            if checks_asset:
-                checks_path = os.path.join(td, checks_asset.name)
-                _download(checks_asset.url, checks_path)
-                checks_txt = open(checks_path, 'r', encoding='utf-8', errors='ignore').read()
-                checks = _parse_checksums_file(checks_txt)
-                expected = checks.get(exe_asset.name)
-                if expected:
-                    got = _sha256_file(exe_path)
-                    if got != expected:
-                        return
+        # optional checksum verification
+        if checks_asset:
+            checks_path = os.path.join(td, checks_asset.name)
+            _log(f'Downloading checksums: {checks_asset.url} -> {checks_path}')
+            _download(checks_asset.url, checks_path)
+            checks_txt = open(checks_path, 'r', encoding='utf-8', errors='ignore').read()
+            checks = _parse_checksums_file(checks_txt)
+            expected = checks.get(exe_asset.name)
+            if expected:
+                got = _sha256_file(exe_path)
+                if got != expected:
+                    _log('Checksum mismatch for installer download.')
+                    return
 
-            ok = _run_installer_silently(exe_path)
-            if ok:
-                time.sleep(1.0)
-                os._exit(0)
+        ok = _run_installer_silently(exe_path)
+        if ok:
+            _log(f'Installer launched for update to {tag}; exiting app.')
+            time.sleep(2.0)
+            os._exit(0)
     except Exception:
+        _log('Background update check failed: ' + traceback.format_exc().strip())
         return
