@@ -40,6 +40,11 @@ _tray_icon = os.path.join(project_root, 'build', 'icon.ico')
 if os.path.exists(_tray_icon):
     datas += [(_tray_icon, 'build')]
 
+# --- App static files (favicon etc.) ---
+_favicon = os.path.join(project_root, 'static', 'favicon.ico')
+if os.path.exists(_favicon):
+    datas += [(_favicon, 'static')]
+
 # pystray loads platform backends dynamically; keep them as hidden imports.
 hiddenimports += ['pystray', 'pystray._win32']
 

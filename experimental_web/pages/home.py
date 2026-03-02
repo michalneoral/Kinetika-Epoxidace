@@ -422,19 +422,6 @@ def page_home() -> None:
                 experiment_row(exp)
 
     with frame("Správa experimentů"):
-        app_dir_lbl = ui.label(f"Data aplikace: {APP_DIR}").classes("text-caption")
-        attach_tooltip(
-            app_dir_lbl,
-            'Složka aplikace',
-            'Lokální složka, kam aplikace ukládá pomocná data (např. cache, exporty a soubory experimentů).',
-        )
-
-        db_lbl = ui.label(f"Databáze: {DB_PATH}").classes("text-caption")
-        attach_tooltip(
-            db_lbl,
-            'Databázový soubor',
-            'Cesta k SQLite databázi, kde jsou uložené experimenty, nastavení i metadata aplikace.',
-        )
 
         with ui.row().classes("q-gutter-md"):
             new_btn = ui.button("Nový experiment", on_click=wrap_ui_handler('home.new_experiment.click', new_experiment_dialog)).props("unelevated")

@@ -163,6 +163,7 @@ def main(*, reload: bool = False) -> None:
             tray_icon = None
     ui.run(
         title=APP_DISPLAY_NAME,
+        favicon='static/favicon.ico',
         reload=reload,
         storage_secret=get_storage_secret(),
         host='127.0.0.1',

@@ -449,7 +449,7 @@ def frame(title: str):
             # --- About tab ---
             with ui.tab_panel('about'):
                 import os
-                from experimental_web.core.config import APP_NAME
+                from experimental_web.core.config import APP_NAME, UPDATE_REPO_URL, UPDATE_OWNER, UPDATE_REPO
                 from experimental_web.core.version import __version__
                 from experimental_web.core.runtime_control import default_port, open_in_browser, read_saved_port, request_shutdown
 
@@ -463,6 +463,13 @@ def frame(title: str):
 
                 with ui.column().classes('q-gutter-xs q-mt-sm'):
                     ui.label(f'Verze: {__version__}').classes('text-body2')
+                    repo_link = ui.link(f'GitHub: {UPDATE_OWNER}/{UPDATE_REPO}', UPDATE_REPO_URL, new_tab=True).classes('text-body2')
+                    attach_tooltip(
+                        repo_link,
+                        'Repozitář na GitHubu',
+                        'Odkaz na projekt na GitHubu. Z tohoto repozitáře se stahují nové verze při automatické aktualizaci.',
+                    )
+
                     ui.label(f'Data: {APP_DIR}').classes('text-body2')
                     ui.label(f'Databáze: {DB_PATH}').classes('text-body2')
                     ui.label(f'Debug: {"ON" if is_debug_enabled() else "OFF"}').classes('text-body2')
