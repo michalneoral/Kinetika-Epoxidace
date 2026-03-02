@@ -1,0 +1,58 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+*.dll
+*.dylib
+
+# ---- Virtual envs ----
+.venv/
+.venv-*/
+venv/
+ENV/
+env/
+pip-wheel-metadata/
+
+# ---- Build / packaging ----
+dist/
+pyi_build/
+build/*.log
+*.manifest
+*.spec.bak
+
+# PyInstaller cache
+.pyinstaller/
+
+# ---- Installer outputs ----
+installer/Output/
+installer/*.exe
+installer/*.msi
+installer/*.zip
+installer/_version.iss
+installer/checksums*.txt
+
+# ---- IDE / OS ----
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# ---- Logs ----
+*.log
+
+# ---- Local runtime artifacts ----
+.nicegui/
+*.json
+# If you ever run with local sqlite in repo (should normally be in platformdirs)
+*.sqlite
+*.sqlite3
+*.db
+
+# ---- Matplotlib cache ----
+.matplotlib/
+
+# ---- Jupyter ----
+.ipynb_checkpoints/
