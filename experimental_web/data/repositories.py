@@ -96,6 +96,7 @@ class ExperimentRepository:
             con.commit()
 
     def duplicate(self, source_id: int, new_name: str) -> Experiment:
+
         src = self.get(source_id)
         if not src:
             raise ValueError("Source experiment not found")
@@ -103,6 +104,17 @@ class ExperimentRepository:
             raise ValueError("Experiment with this name already exists")
 
         new_exp = self.create(new_name)
+
+        # copy description (best effort)
+        try:
+            if getattr(src, 'description', None):
+                with self.db.connect() as con:
+                    cols = {r[1] for r in con.execute('PRAGMA table_info(experiments)').fetchall()}
+                    if 'description' in cols:
+                        con.execute('UPDATE experiments SET description=? WHERE id=?', (src.description, new_exp.id))
+                        con.commit()
+        except Exception:
+            pass
 
         # copy folder content (best effort)
         try:
@@ -124,6 +136,93 @@ class ExperimentRepository:
             ExperimentFileRepository(self.db.path).duplicate_files(source_id, new_exp.id)
         except Exception:
             pass
+
+        # copy all experiment-related DB rows so that "Duplikovat" behaves like export+import.
+        # This includes computations, processing results (rychlosti) and graph settings.
+        try:
+            with self.db.connect() as con:
+                def _table_exists(name: str) -> bool:
+                    r = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
+                    return r is not None
+
+                def _cols(name: str) -> list[str]:
+                    return [r[1] for r in con.execute(f'PRAGMA table_info({name})').fetchall()]
+
+                def _copy_simple(table: str, *, key_col: str = 'experiment_id', or_replace: bool = False) -> None:
+                    if not _table_exists(table):
+                        return
+                    cols = _cols(table)
+                    if key_col not in cols:
+                        return
+                    insert_cols = [c for c in cols if c not in ('id', key_col)]
+                    if not insert_cols:
+                        return
+                    ins = 'INSERT OR REPLACE' if or_replace else 'INSERT'
+                    sql = (
+                        f"{ins} INTO {table} ({key_col}, " + ', '.join(insert_cols) + ") "
+                        f"SELECT ?, " + ', '.join(insert_cols) + f" FROM {table} WHERE {key_col}=?"
+                    )
+                    con.execute(sql, (new_exp.id, source_id))
+
+                # simple tables keyed by experiment_id
+                for t in (
+                    'experiment_table_picks',
+                    'experiment_processed_tables',
+                    'processed_tables',
+                    'experiment_computations',
+                    'computations',
+                    'experiment_graph_settings',
+                ):
+                    _copy_simple(t)
+
+                # settings tables keyed by experiment_id but unique/PK
+                _copy_simple('experiment_processing_settings', or_replace=True)
+                _copy_simple('excel_files', or_replace=True)
+
+                # processing runs need run_id remapping
+                if _table_exists('experiment_processing_runs') and _table_exists('experiment_processing_run_models'):
+                    run_cols = _cols('experiment_processing_runs')
+                    # choose available columns (older schemas might miss some)
+                    keep = [c for c in run_cols if c not in ('id', 'experiment_id')]
+                    # ensure deterministic order
+                    select_sql = 'SELECT id, ' + ', '.join(keep) + ' FROM experiment_processing_runs WHERE experiment_id=? ORDER BY id'
+                    runs = con.execute(select_sql, (source_id,)).fetchall()
+                    run_id_map: dict[int, int] = {}
+
+                    for r in runs:
+                        vals = [r[c] for c in keep]
+                        placeholders = ', '.join(['?'] * (1 + len(keep)))
+                        ins_cols = ', '.join(['experiment_id'] + keep)
+                        cur = con.execute(
+                            f'INSERT INTO experiment_processing_runs ({ins_cols}) VALUES ({placeholders})',
+                            [new_exp.id] + vals,
+                        )
+                        new_run_id = int(cur.lastrowid)
+                        run_id_map[int(r['id'])] = new_run_id
+
+                    # copy models per run
+                    model_cols = _cols('experiment_processing_run_models')
+                    keep_m = [c for c in model_cols if c not in ('id', 'run_id')]
+                    for old_run_id, new_run_id in run_id_map.items():
+                        rows = con.execute(
+                            'SELECT ' + ', '.join(keep_m) + ' FROM experiment_processing_run_models WHERE run_id=?',
+                            (old_run_id,),
+                        ).fetchall()
+                        for rr in rows:
+                            vals = [rr[c] for c in keep_m]
+                            placeholders = ', '.join(['?'] * (1 + len(keep_m)))
+                            ins_cols = ', '.join(['run_id'] + keep_m)
+                            con.execute(
+                                f'INSERT INTO experiment_processing_run_models ({ins_cols}) VALUES ({placeholders})',
+                                [new_run_id] + vals,
+                            )
+
+                con.commit()
+        except Exception:
+            # duplication should never break UX; if anything fails, we keep the basic experiment copy.
+            pass
+
+        return new_exp
 
         return new_exp
 

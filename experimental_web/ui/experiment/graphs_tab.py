@@ -1284,6 +1284,8 @@ def _render_graphs_tab_body(experiment_id: int) -> None:
     configs: dict[str, GraphConfig] = {}
     plot_images: dict[str, Any] = {}
 
+    plot_error_labels: dict[str, StyledLabel] = {}
+
     for name in ordered:
         model = recreated_models.get(name)
         entry = run_models.get(name) or {}
@@ -1478,8 +1480,28 @@ def _render_graphs_tab_body(experiment_id: int) -> None:
         try:
             fig = plotter.plot(ui=True, **cfg.to_kwargs())
             update_plot_image(fig, img)
+            # clear inline error (if any)
+            err = plot_error_labels.get(model_name)
+            if err is not None:
+                try:
+                    err.set_visibility(False)
+                except Exception:
+                    pass
+
         except Exception as ex:
-            ui.notify(f'Chyba při vykreslení: {ex}', type='negative')
+            # Do not spam ui.notify while the user types (e.g. unfinished LaTeX).
+            # Instead show an inline error for this plot and keep it updated.
+            err = plot_error_labels.get(model_name)
+            if err is not None:
+                msg = str(ex)
+                # Shorten very long parse errors a bit for readability.
+                if len(msg) > 500:
+                    msg = msg[:500] + '…'
+                err.set(f'Chyba při vykreslení: {msg}', 'error')
+                try:
+                    err.set_visibility(True)
+                except Exception:
+                    pass
             return
         if persist:
             _schedule_save(model_name)
@@ -1626,6 +1648,20 @@ def _render_graphs_tab_body(experiment_id: int) -> None:
                                 cross=False,
                             ).classes('w-full max-w-5xl [&>img]:w-full [&>svg]:w-full')
                             plot_images[name] = img
+                            # inline error label for plotting problems (e.g. invalid LaTeX)
+                            err_lbl = StyledLabel('', 'error')
+                            try:
+                                err_lbl.set_visibility(False)
+                            except Exception:
+                                pass
+                            plot_error_labels[name] = err_lbl
+                            attach_tooltip(
+                                err_lbl,
+                                'Chyba vykreslení',
+                                'Pokud je text/nadpis ve formátu LaTeX nedokončený nebo neplatný,\n\n'
+                                'zobrazí se zde chyba místo opakovaných notifikací.',
+                            )
+
                             attach_tooltip(
                                 img,
                                 'Graf',
@@ -1677,7 +1713,18 @@ def _render_graphs_tab_body(experiment_id: int) -> None:
                         # Do not persist on initial render; only on user changes
                         
                     except Exception as e:
-                        StyledLabel(f'Chyba při vykreslení: {e}', 'warning')
+                        err = plot_error_labels.get(name)
+                        if err is None:
+                            err = StyledLabel('', 'error')
+                            plot_error_labels[name] = err
+                        msg = str(e)
+                        if len(msg) > 500:
+                            msg = msg[:500] + '…'
+                        err.set(f'Chyba při vykreslení: {msg}', 'error')
+                        try:
+                            err.set_visibility(True)
+                        except Exception:
+                            pass
 
 
 def render_graphs_tab(experiment_id: int) -> None:
