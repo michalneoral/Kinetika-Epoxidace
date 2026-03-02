@@ -68,7 +68,7 @@ class Kinetika:
 
         self.enable_propagation()
         # fill with test data, if possible (after some loading time)
-        # ui.timer(0.1, self.input_tab.load_default_df, once=True)
+        ui.timer(0.1, self.input_tab.load_default_df, once=True)
 
     def build_ui(self, processor, theme):
         self.create_header()

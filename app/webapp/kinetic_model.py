@@ -101,6 +101,10 @@ class KineticModel:
                 assert n_cols == 4, f"For special model {special_model} you have to have {n_cols} columns in your data."
                 self.odes = self.odes_k_ue_eh_ueh
                 k_init_default = [0.005, 0.001, 0.005]
+            elif special_model == 'C18:2_separated':
+                assert n_cols == 5, f"For special model {special_model} you have to have {n_cols} columns in your data."
+                self.odes = self.odes_k_um_md_mh_dh_ueh
+                k_init_default = [0.005, 0.001, 0.005, 0.005, 0.005]
             else:
                 raise NotImplementedError(f"Special model {special_model} not implemented.")
         else:
@@ -237,8 +241,40 @@ class KineticModel:
         dU = - k_ue * U
         dE = k_ue * U - k_eh * E
         dH = k_eh * E
-        dEH = dE + dH
+        dEH = k_ueh * U
         return [dU, dE, dH, dEH]
+
+    def odes_k_um_md_mh_dh_uh(self, t, conc, k):
+        """
+        States (5 inputs):
+          U  = C18:2
+          M  = C18:2 1-EPO
+          D  = C18:2 2-EPO
+          Hy = hydroxyly
+          S  = Σ(C18:2 EPO + hydroxyly)  (derived control variable)
+
+        Kinetics (pseudo-1st order):
+          U  --k_um--> M
+          M  --k_md--> D
+          M  --k_mh--> Hy
+          D  --k_dh--> Hy
+
+        NOTE:
+          S is derived as M + D + Hy, so dS/dt is computed as dM + dD + dHy.
+          For consistency, set initial S0 = M0 + D0 + Hy0 (ideally also S ≈ 1 - U if normalized).
+        """
+        U, M, D, Hy, S = conc  # S is control/derived
+        k_um, k_md, k_mh, k_dh, k_uh = k
+
+        dU = -k_um * U - k_uh * U
+        dM = k_um * U - (k_md + k_mh) * M
+        dD = k_md * M - k_dh * D
+        dHy = k_mh * M + k_dh * D + k_uh * U
+
+        # Derived control channel:
+        dS = dM + dD + dHy
+
+        return [dU, dM, dD, dHy, dS]
 
     def odes_k_um_md_mh_dh(self, t, conc, k):
         U, M, D, H = conc

@@ -1,14 +1,5 @@
 from nicegui import events, ui
-from typing import List
-import os
-import pandas as pd
-
-from app.webapp.core import extract_df, extract_df_dict, validate_table
-from app.webapp.utils import REQUIRED_FAME, REQUIRED_EPO
 from app.webapp.processing import TableProcessor
-from app.webapp.kinetic_model import InitConditions
-import logging
-from io import BytesIO
 from app.webapp.gui.styled_elements.label import StyledLabel
 from app.webapp.gui.utils.tables import sanitize_df_for_table
 from app.webapp.gui.abstract_tab import AbstractTab

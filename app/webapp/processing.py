@@ -7,7 +7,7 @@ from collections import OrderedDict
 
 
 def get_possible_models():
-    return ['C18:1_simplified', 'C18:1', 'C18:2_simplified', 'C18:2_eps_and_others', 'C18:2', 'C18:2_with_k_uh',
+    return ['C18:1_simplified', 'C18:1', 'C18:2_simplified', 'C18:2_eps_and_others', 'C18:2', 'C18:2_separated', 'C18:2_with_k_uh',
             'C20:1_simplified']
 
 
@@ -391,6 +391,19 @@ class TableProcessor:
                                                        'zastoupení hydroxyly',
                                                    ],
                                                    init_method=initialization, t_shift=t_shift)
+
+        c_model = 'C18:2_separated'
+        if c_model in models_to_compute:
+            self.k_models[c_model] = self.create_model(self.tables['C18_2'],
+                                                       columns=[
+                                                           'zastoupení C18:2',
+                                                           'zastoupení Σ C18:2 1-EPO',
+                                                           'zastoupení C18:2 2-EPO',
+                                                           'zastoupení hydroxyly',
+                                                           'zastoupení Σ C18:2 EPO + hydroxyly'
+                                                       ],
+                                                       special_model='C18:2_separated',
+                                                       init_method=initialization, t_shift=t_shift)
 
         c_model = 'C18:2_with_k_uh'
         if c_model in models_to_compute:
