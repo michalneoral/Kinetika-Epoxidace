@@ -52,6 +52,17 @@ def _ensure_stdio() -> None:
         sys.stdin = _DEVNULL_IN
 
 
+def _resource_path(*parts: str) -> str:
+    """Return an absolute path to a bundled resource (works for source and PyInstaller)."""
+    from pathlib import Path
+    if bool(getattr(sys, 'frozen', False)) and hasattr(sys, '_MEIPASS'):
+        base = Path(getattr(sys, '_MEIPASS'))  # type: ignore[attr-defined]
+    else:
+        # experimental_web/app.py -> repo root
+        base = Path(__file__).resolve().parents[1]
+    return str(base.joinpath(*parts))
+
+
 def _parse_debug_flag() -> int | None:
     """Parse --debug [LEVEL] without breaking NiceGUI/uvicorn args."""
 
@@ -157,15 +168,57 @@ def main(*, reload: bool = False) -> None:
             tray_icon = start_tray(port=port, app_id=APP_NAME, display_name=APP_DISPLAY_NAME)
         except Exception:
             tray_icon = None
-    ui.run(
+
+    # --- favicon ---
+    # Browsers (especially Chrome) can be picky/caching about favicons. We therefore:
+    # 1) ensure /favicon.ico is served explicitly
+    # 2) add <link rel="icon"> tags with a version cache-buster
+    # 3) pass favicon path to NiceGUI as well
+    from experimental_web.core.version import __version__
+    favicon_path: str | None = None
+    try:
+        from pathlib import Path
+        from fastapi.responses import FileResponse
+
+        candidate = _resource_path('static', 'favicon.ico')
+        if Path(candidate).exists():
+            favicon_path = candidate
+
+            # Serve static directory (so /static/favicon.ico also works)
+            try:
+                app.add_static_files('/static', str(Path(candidate).parent))
+            except Exception:
+                pass
+
+            # Explicit route for /favicon.ico (overrides NiceGUI default)
+            def _favicon_response() -> FileResponse:
+                return FileResponse(
+                    candidate,
+                    media_type='image/x-icon',
+                    headers={'Cache-Control': 'no-cache, no-store, must-revalidate'},
+                )
+
+            # Avoid duplicate routes if reloaded in dev.
+            if not any(getattr(r, 'path', None) == '/favicon.ico' for r in app.routes):
+                app.add_api_route('/favicon.ico', _favicon_response, include_in_schema=False)
+
+            # Add explicit <link> tags with cache-busting query.
+            ui.add_head_html(f'<link rel="icon" type="image/x-icon" href="/favicon.ico?v={__version__}">', shared=True)
+            ui.add_head_html(f'<link rel="shortcut icon" href="/favicon.ico?v={__version__}">', shared=True)
+    except Exception:
+        favicon_path = None
+
+    run_kwargs = dict(
         title=APP_DISPLAY_NAME,
-        favicon='static/favicon.ico',
         reload=reload,
         storage_secret=get_storage_secret(),
         host='127.0.0.1',
         port=port,
         show=True,
     )
+    if favicon_path:
+        run_kwargs['favicon'] = favicon_path
+    ui.run(**run_kwargs)
 
 
 if __name__ in ('__main__', '__mp_main__'):
