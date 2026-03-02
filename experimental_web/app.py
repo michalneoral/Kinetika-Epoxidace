@@ -1,24 +1,55 @@
 from __future__ import annotations
 
+"""NiceGUI application entrypoint.
+
+Important for packaging (PyInstaller):
+- Do NOT execute ui.run() at import time.
+- Use a proper __main__ guard + multiprocessing.freeze_support().
+
+This module can still be executed directly:
+    python -m experimental_web.app
+
+It also supports an additional flag:
+    --debug [LEVEL]
+
+The flag is stripped from sys.argv so it doesn't interfere with NiceGUI/uvicorn args.
+
+Packaged runtime quality-of-life:
+- The app runs as a local HTTP server (browser UI). A windowed EXE has no taskbar window,
+  so we implement:
+  - "single-instance" behavior: launching again opens a new browser tab to the already
+    running instance instead of silently failing due to port conflicts.
+  - a shutdown endpoint used by "--quit" and a Settings button.
+"""
+
 import argparse
 import os
 import sys
+import threading
+import time
 
-from experimental_web.core.config import APP_NAME
-from experimental_web.core.paths import APP_DIR
 
-# Store NiceGUI's persistence files (e.g. storage-*.json) next to the database.
-# Users can still override this by explicitly setting NICEGUI_STORAGE_PATH.
-os.environ.setdefault('NICEGUI_STORAGE_PATH', str(APP_DIR))
+# In PyInstaller "windowed" builds on Windows, stdio streams may be None.
+# Uvicorn's default logging formatter calls sys.stderr.isatty(), which would crash.
+_DEVNULL_OUT = None
+_DEVNULL_IN = None
 
-from nicegui import ui
 
-from experimental_web.core.app_init import init_app
-from experimental_web.core.secret import get_storage_secret
-from experimental_web.logging_setup import setup_logging
+def _ensure_stdio() -> None:
+    """Ensure sys.stdin/stdout/stderr are usable in frozen windowed builds."""
 
-# register routes by importing pages
-from experimental_web.pages import home, experiment  # noqa: F401
+    global _DEVNULL_OUT, _DEVNULL_IN
+
+    # NOTE: Using os.devnull is sufficient; it provides an isatty() method.
+    if sys.stdout is None:
+        _DEVNULL_OUT = _DEVNULL_OUT or open(os.devnull, 'w', encoding='utf-8')
+        sys.stdout = _DEVNULL_OUT
+    if sys.stderr is None:
+        _DEVNULL_OUT = _DEVNULL_OUT or open(os.devnull, 'w', encoding='utf-8')
+        sys.stderr = _DEVNULL_OUT
+    if sys.stdin is None:
+        _DEVNULL_IN = _DEVNULL_IN or open(os.devnull, 'r', encoding='utf-8')
+        sys.stdin = _DEVNULL_IN
 
 
 def _parse_debug_flag() -> int | None:
@@ -39,18 +70,119 @@ def _parse_debug_flag() -> int | None:
     return args.debug
 
 
-debug_level = _parse_debug_flag()
-if debug_level is None:
-    os.environ.pop('EXPERIMENTAL_WEB_DEBUG', None)
-else:
-    os.environ['EXPERIMENTAL_WEB_DEBUG'] = str(int(debug_level))
+def main(*, reload: bool = False) -> None:
+    """Start the NiceGUI application."""
 
-setup_logging(debug_level)
+    _ensure_stdio()
 
-init_app()
+    from experimental_web.core.config import APP_NAME, APP_DISPLAY_NAME
+    from experimental_web.core.paths import APP_DIR
+    from experimental_web.core.runtime_control import (
+        default_port,
+        find_free_port,
+        is_our_server,
+        open_in_browser,
+        ping,
+        read_saved_port,
+        save_port,
+    )
 
-ui.run(
-    title=APP_NAME.replace('_', ' '),
-    reload=False,
-    storage_secret=get_storage_secret(),
-)
+    # Store NiceGUI's persistence files (e.g. storage-*.json) next to the database.
+    # Users can still override this by explicitly setting NICEGUI_STORAGE_PATH.
+    os.environ.setdefault('NICEGUI_STORAGE_PATH', str(APP_DIR))
+
+    debug_level = _parse_debug_flag()
+    if debug_level is None:
+        os.environ.pop('EXPERIMENTAL_WEB_DEBUG', None)
+    else:
+        os.environ['EXPERIMENTAL_WEB_DEBUG'] = str(int(debug_level))
+
+    # --- Single-instance behavior (browser UI) ---
+    # If another instance is already running, just open a new tab and exit.
+    candidate_port = read_saved_port(APP_DIR) or default_port()
+    pj = ping(candidate_port)
+    if is_our_server(pj, app_name=APP_NAME):
+        open_in_browser(candidate_port)
+        return
+
+    # Choose a port (try last-saved / default first; otherwise pick a free ephemeral port)
+    port = find_free_port(candidate_port)
+    save_port(APP_DIR, port)
+    os.environ['EXPERIMENTAL_WEB_ACTIVE_PORT'] = str(port)
+
+    from experimental_web.logging_setup import setup_logging
+    from experimental_web.core.app_init import init_app
+    from experimental_web.core.secret import get_storage_secret
+    from experimental_web.core.updater import maybe_update_in_background
+    from experimental_web.core.version import __version__
+
+    setup_logging(debug_level)
+    init_app()
+
+    # Fire-and-forget update check (won't block startup).
+    # By default, only run this in a frozen build (PyInstaller), not during dev runs.
+    is_frozen = bool(getattr(sys, 'frozen', False))
+    if debug_level is None and (is_frozen or os.getenv('EXPERIMENTAL_WEB_FORCE_UPDATE', '').strip() == '1'):
+        threading.Thread(target=maybe_update_in_background, daemon=True).start()
+
+    # register routes by importing pages
+    from experimental_web.pages import home, experiment  # noqa: F401
+
+    # import NiceGUI only after env vars are set
+    from nicegui import app, ui
+
+    # --- internal control endpoints (used by --quit and for detecting running instance) ---
+    @app.get('/__ping__')
+    def __ping__():
+        return {
+            'app': APP_NAME,
+            'version': __version__,
+            'pid': os.getpid(),
+            'port': port,
+        }
+
+    @app.post('/__shutdown__')
+    def __shutdown__():
+        # Exiting the process is the most reliable across uvicorn/nicegui versions.
+        # We delay slightly so the HTTP response can be sent.
+        def _exit() -> None:
+            time.sleep(0.25)
+            os._exit(0)
+
+        threading.Thread(target=_exit, daemon=True).start()
+        return {'ok': True}
+
+
+    # --- tray icon (Windows, frozen build) ---
+    tray_icon = None  # keep reference to avoid GC
+    if os.name == 'nt' and bool(getattr(sys, 'frozen', False)) and os.getenv('EXPERIMENTAL_WEB_DISABLE_TRAY', '').strip() != '1':
+        try:
+            from experimental_web.core.tray import start_tray
+            tray_icon = start_tray(port=port, app_id=APP_NAME, display_name=APP_DISPLAY_NAME)
+        except Exception:
+            tray_icon = None
+    ui.run(
+        title=APP_DISPLAY_NAME,
+        reload=reload,
+        storage_secret=get_storage_secret(),
+        host='127.0.0.1',
+        port=port,
+        show=True,
+    )
+
+
+if __name__ in ('__main__', '__mp_main__'):
+    # Required for Windows multiprocessing when frozen (PyInstaller).
+    from multiprocessing import freeze_support
+    from experimental_web.core.version import __version__
+
+    freeze_support()
+    _ensure_stdio()
+    # Useful for CLI runs; in the packaged app there is no console by default.
+    try:
+        from experimental_web.core.config import APP_DISPLAY_NAME
+        name = APP_DISPLAY_NAME
+    except Exception:
+        name = 'FAME_EPO_Manager'
+    print(f'Starting {name} v{__version__}…')
+    main(reload=False)

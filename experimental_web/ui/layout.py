@@ -448,6 +448,11 @@ def frame(title: str):
 
             # --- About tab ---
             with ui.tab_panel('about'):
+                import os
+                from experimental_web.core.config import APP_NAME
+                from experimental_web.core.version import __version__
+                from experimental_web.core.runtime_control import default_port, open_in_browser, read_saved_port, request_shutdown
+
                 about_title = ui.label('O aplikaci').classes('text-subtitle1')
                 attach_tooltip(
                     about_title,
@@ -457,9 +462,61 @@ def frame(title: str):
                 ui.label('Základní informace o běhu aplikace.').classes('text-caption text-grey')
 
                 with ui.column().classes('q-gutter-xs q-mt-sm'):
+                    ui.label(f'Verze: {__version__}').classes('text-body2')
                     ui.label(f'Data: {APP_DIR}').classes('text-body2')
                     ui.label(f'Databáze: {DB_PATH}').classes('text-body2')
                     ui.label(f'Debug: {"ON" if is_debug_enabled() else "OFF"}').classes('text-body2')
+
+                def _current_port() -> int:
+                    # Prefer current process port, then saved port, then default.
+                    env_port = os.getenv('EXPERIMENTAL_WEB_ACTIVE_PORT', '').strip()
+                    if env_port.isdigit():
+                        p = int(env_port)
+                        if 1 <= p <= 65535:
+                            return p
+                    return read_saved_port(APP_DIR) or default_port()
+
+                quit_dialog = ui.dialog()
+                with quit_dialog, ui.card().classes('w-[520px]'):
+                    lbl = ui.label('Ukončit aplikaci?').classes('text-subtitle1')
+                    attach_tooltip(
+                        lbl,
+                        'Ukončit aplikaci',
+                        'Aplikace běží jako lokální server na pozadí. '
+                        'Tato volba ukončí běžící proces (užitečné, když je zavřený prohlížeč).',
+                    )
+                    ui.label('Aplikace se ukončí a webová stránka přestane reagovat.').classes('text-caption text-grey')
+                    with ui.row().classes('justify-end q-gutter-sm q-mt-md'):
+                        ui.button('Zrušit', on_click=quit_dialog.close).props('flat')
+                        ui.button(
+                            'Ukončit',
+                            icon='power_settings_new',
+                            on_click=lambda: (request_shutdown(_current_port()), ui.notify('Ukončuji aplikaci…', type='warning')),
+                        ).props('color=negative')
+
+                ui.separator().classes('q-mt-md')
+                with ui.row().classes('items-center q-gutter-sm q-mt-sm'):
+                    btn_open = ui.button(
+                        'Otevřít v prohlížeči',
+                        icon='open_in_new',
+                        on_click=lambda: open_in_browser(_current_port()),
+                    ).props('outline')
+                    attach_tooltip(
+                        btn_open,
+                        'Otevřít v prohlížeči',
+                        'Otevře (nový tab) s běžící aplikací. Hodí se, když se tab zavřel, ale server pořád běží.',
+                    )
+
+                    btn_quit = ui.button(
+                        'Ukončit aplikaci',
+                        icon='power_settings_new',
+                        on_click=quit_dialog.open,
+                    ).props('color=negative outline')
+                    attach_tooltip(
+                        btn_quit,
+                        'Ukončit aplikaci',
+                        'Ukončí běžící proces aplikace. Použij, když nechceš, aby aplikace běžela na pozadí.',
+                    )
 
         with ui.row().classes('justify-end w-full q-pt-md'):
             close_btn = ui.button('Zavřít', on_click=settings_dialog.close).props('flat')

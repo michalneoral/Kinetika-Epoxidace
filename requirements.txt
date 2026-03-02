@@ -16,3 +16,6 @@ plotly
 openpyxl
 latex2mathml
 
+# tray icon (Windows)
+pystray
+pywin32; platform_system=='Windows'
