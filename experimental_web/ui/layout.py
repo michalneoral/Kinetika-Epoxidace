@@ -17,6 +17,49 @@ from experimental_web.ui.utils.tooltips import attach_tooltip, push_tooltip_sett
 log = get_logger(__name__)
 
 
+# --- Update prompt (no auto-install) ---
+# We check GitHub releases in background (once per app run) and, if an update is
+# available, we ask the user in the UI. If the user declines, we ask again on the
+# next application start (no suppression is stored).
+_UPDATE_CHECK_STARTED = False
+_UPDATE_CHECK_DONE = False
+_UPDATE_INFO = None
+
+
+def _start_update_check_if_needed() -> None:
+    global _UPDATE_CHECK_STARTED
+
+    if _UPDATE_CHECK_STARTED:
+        return
+    _UPDATE_CHECK_STARTED = True
+
+    import os
+    import sys
+    import threading
+
+    # Only run update checks in frozen builds by default.
+    is_frozen = bool(getattr(sys, 'frozen', False))
+    force = os.getenv('EXPERIMENTAL_WEB_FORCE_UPDATE', '').strip() == '1'
+    disabled = os.getenv('EXPERIMENTAL_WEB_DISABLE_UPDATE', '').strip() == '1'
+    if disabled or (not is_frozen and not force):
+        global _UPDATE_CHECK_DONE
+        _UPDATE_CHECK_DONE = True
+        return
+
+    def _worker() -> None:
+        global _UPDATE_INFO, _UPDATE_CHECK_DONE
+        try:
+            from experimental_web.core.updater import get_update_info
+
+            _UPDATE_INFO = get_update_info()
+        except Exception:
+            _UPDATE_INFO = None
+        finally:
+            _UPDATE_CHECK_DONE = True
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 THEME_KEY = "theme_mode"          # 'auto' | 'light' | 'dark' (stored in app.storage.user + DB)
 DARK_VALUE_KEY = "dark_value"     # None | False | True (stored in app.storage.user, bound to ui.dark_mode)
 
@@ -528,6 +571,112 @@ def frame(title: str):
         with ui.row().classes('justify-end w-full q-pt-md'):
             close_btn = ui.button('Zavřít', on_click=settings_dialog.close).props('flat')
             attach_tooltip(close_btn, 'Zavřít', 'Zavře dialog nastavení bez dalších změn.')
+
+    # --- Update prompt (only after UI is ready) ---
+    # Start the background check once per app run; then, for each client/session,
+    # show a confirmation dialog if an update is available.
+    _start_update_check_if_needed()
+
+    try:
+        client = ui.context.client
+        if client and not client.storage.get('update_prompt_shown', False):
+            client.storage['update_prompt_shown'] = True
+
+            def _maybe_show_update_prompt() -> None:
+                # Wait until background check finishes.
+                if not _UPDATE_CHECK_DONE:
+                    return
+                if not _UPDATE_INFO:
+                    # No update or check failed.
+                    try:
+                        t.cancel()
+                    except Exception:
+                        pass
+                    return
+
+                try:
+                    t.cancel()
+                except Exception:
+                    pass
+
+                info = _UPDATE_INFO
+
+                dlg = ui.dialog()
+                with dlg, ui.card().classes('w-[560px] max-w-[92vw]'):
+                    title_lbl = ui.label('Dostupná aktualizace').classes('text-h6')
+                    attach_tooltip(
+                        title_lbl,
+                        'Aktualizace aplikace',
+                        'Aplikace nalezla novější verzi na GitHubu. Instalace se spustí pouze po potvrzení uživatele.',
+                    )
+
+                    ui.label(f'Nainstalovaná verze: {info.current_version}').classes('text-body2')
+                    ui.label(f'Dostupná verze: {info.latest_version}').classes('text-body2')
+                    link = ui.link('Zobrazit release na GitHubu', info.release_url, new_tab=True).classes('text-body2')
+                    attach_tooltip(
+                        link,
+                        'Release na GitHubu',
+                        'Otevře stránku release, kde je uveden changelog a instalační soubor.',
+                    )
+
+                    ui.separator().classes('q-mt-sm q-mb-sm')
+                    ui.label('Chcete nainstalovat aktualizaci teď?').classes('text-body2')
+                    ui.label('Pokud dáte „Teď ne“, aplikace se zeptá znovu při dalším spuštění.').classes('text-caption text-grey')
+
+                    async def _do_install() -> None:
+                        # Download + launch in background thread, keep UI responsive.
+                        import asyncio
+                        import os
+
+                        from experimental_web.core.runtime_control import (
+                            default_port,
+                            read_saved_port,
+                            request_shutdown,
+                        )
+                        from experimental_web.core.paths import APP_DIR
+                        from experimental_web.core.updater import download_installer, launch_installer
+
+                        btn_update.disable()
+                        btn_no.disable()
+                        spinner.visible = True
+                        status_lbl.text = 'Stahuji aktualizaci…'
+
+                        try:
+                            installer_path = await asyncio.to_thread(download_installer, info)
+                            status_lbl.text = 'Spouštím instalátor…'
+                            ok = await asyncio.to_thread(launch_installer, installer_path)
+                            if not ok:
+                                raise RuntimeError('Nelze spustit instalátor')
+
+                            # Ask the running server to stop so the installer can replace files.
+                            env_port = os.getenv('EXPERIMENTAL_WEB_ACTIVE_PORT', '').strip()
+                            port = int(env_port) if env_port.isdigit() else (read_saved_port(APP_DIR) or default_port())
+                            request_shutdown(port)
+                            ui.notify('Spouštím instalátor a ukončuji aplikaci…', type='warning')
+                            dlg.close()
+                        except Exception as ex:
+                            spinner.visible = False
+                            status_lbl.text = 'Aktualizace selhala.'
+                            btn_update.enable()
+                            btn_no.enable()
+                            ui.notify(f'❌ Aktualizace selhala: {ex}', type='negative')
+
+                    with ui.row().classes('items-center q-gutter-sm q-mt-md'):
+                        spinner = ui.spinner(size='sm')
+                        spinner.visible = False
+                        status_lbl = ui.label('').classes('text-caption text-grey')
+
+                    with ui.row().classes('justify-end q-gutter-sm q-mt-md'):
+                        btn_no = ui.button('Teď ne', on_click=dlg.close).props('flat')
+                        btn_update = ui.button('Aktualizovat', icon='system_update_alt', on_click=_do_install).props('color=primary')
+
+                dlg.open()
+
+            # Poll a few times per second; once update info is ready, show the dialog.
+            t = ui.timer(0.4, _maybe_show_update_prompt)
+    except Exception:
+        # Never break page rendering because of the updater.
+        pass
 
     with ui.column().classes("w-full q-pa-md"):
         if title:

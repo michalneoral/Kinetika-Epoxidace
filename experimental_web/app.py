@@ -113,17 +113,13 @@ def main(*, reload: bool = False) -> None:
     from experimental_web.logging_setup import setup_logging
     from experimental_web.core.app_init import init_app
     from experimental_web.core.secret import get_storage_secret
-    from experimental_web.core.updater import maybe_update_in_background
     from experimental_web.core.version import __version__
 
     setup_logging(debug_level)
     init_app()
 
-    # Fire-and-forget update check (won't block startup).
-    # By default, only run this in a frozen build (PyInstaller), not during dev runs.
-    is_frozen = bool(getattr(sys, 'frozen', False))
-    if debug_level is None and (is_frozen or os.getenv('EXPERIMENTAL_WEB_FORCE_UPDATE', '').strip() == '1'):
-        threading.Thread(target=maybe_update_in_background, daemon=True).start()
+    # NOTE: Updates are *not* installed automatically. The UI will prompt the user
+    # if a newer version is available.
 
     # register routes by importing pages
     from experimental_web.pages import home, experiment  # noqa: F401

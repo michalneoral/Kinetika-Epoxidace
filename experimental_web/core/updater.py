@@ -1,15 +1,19 @@
 """Self-updater (Windows) via GitHub Releases.
 
-This mirrors the approach from the older project (download latest Setup.exe from
-GitHub Releases and run it silently in the background). It is intentionally
-best-effort and should never break app startup.
+Key behavior (by design):
+- The app may *detect* a newer version on startup, but it **must not install
+  automatically**.
+- The user is asked for confirmation in the UI (NiceGUI dialog) or via an
+  interactive check (tray / Start menu).
 
-Notes:
-- If the installer targets Program Files, Windows will still show a UAC prompt.
-  For fully silent updates without admin prompts, use a per-user install
-  directory (e.g. {localappdata}) and PrivilegesRequired=lowest in Inno Setup.
-- Users can disable update checks by setting EXPERIMENTAL_WEB_DISABLE_UPDATE=1.
-- Repo/asset naming can be overridden by env vars (see defaults below).
+This module therefore provides small building blocks:
+- get_update_info(): check latest GitHub release and return UpdateInfo
+- download_installer(): download installer (and optionally verify checksums)
+- launch_installer(): run the Inno Setup installer in silent mode
+- check_for_updates(): interactive (MessageBox Yes/No) flow used by tray/shortcut
+
+The updater is best-effort: failures are logged and must never prevent the app
+from starting.
 """
 
 from __future__ import annotations
@@ -18,9 +22,7 @@ import hashlib
 import json
 import os
 import subprocess
-import tempfile
 import time
-import sys
 import traceback
 from dataclasses import dataclass
 from typing import Any
@@ -33,10 +35,9 @@ except Exception:  # pragma: no cover
     Version = None  # type: ignore
 
 
-from experimental_web.core.version import __version__
 from experimental_web.core.config import UPDATE_OWNER, UPDATE_REPO
 from experimental_web.core.paths import APP_DIR
-
+from experimental_web.core.version import __version__
 
 
 TIMEOUT_S = 10
@@ -44,6 +45,7 @@ TIMEOUT_S = 10
 
 def _log(msg: str) -> None:
     """Append a short line to the updater log in the user data directory."""
+
     try:
         log_path = APP_DIR / 'update.log'
         ts = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -59,7 +61,7 @@ def _env(name: str, default: str) -> str:
     return v.strip() if v and v.strip() else default
 
 
-# GitHub updater target (hardcoded for this project)
+# GitHub updater target (hardcoded for this project via config)
 GITHUB_OWNER = UPDATE_OWNER
 GITHUB_REPO = UPDATE_REPO
 
@@ -71,6 +73,16 @@ ASSET_PREFIX = _env('EXPERIMENTAL_WEB_UPDATE_ASSET_PREFIX', 'FAME_EPO_Manager_Se
 class _Asset:
     name: str
     url: str
+
+
+@dataclass(frozen=True)
+class UpdateInfo:
+    current_version: str
+    latest_version: str
+    release_tag: str
+    release_url: str
+    installer: _Asset
+    checksums: _Asset | None = None
 
 
 def _http_get_json(url: str) -> Any:
@@ -102,9 +114,10 @@ def _parse_checksums_file(text: str) -> dict[str, str]:
     """Parse a checksums file.
 
     Supported formats:
-    - "SHA256  <hash>  <filename>" (like in the old project)
-    - "<hash>  <filename>" (common sha256sum format)
+    - "SHA256  <hash>  <filename>" (legacy)
+    - "<hash>  <filename>" (sha256sum)
     """
+
     out: dict[str, str] = {}
     for line in text.splitlines():
         parts = line.strip().split()
@@ -125,13 +138,13 @@ def _get_latest_release() -> dict[str, Any]:
 
 def _download_dir() -> str:
     """A persistent download directory (avoids temp cleanup races)."""
+
     d = APP_DIR / 'updates'
     d.mkdir(parents=True, exist_ok=True)
     return str(d)
 
 
 def _pick_windows_installer_asset(release: dict[str, Any]) -> tuple[_Asset | None, _Asset | None]:
-    """Pick installer exe and optional checksums asset."""
     exe: _Asset | None = None
     checksums: _Asset | None = None
     for a in release.get('assets', []) or []:
@@ -157,6 +170,7 @@ def _version_obj(v: str):
 
 def _run_installer_silently(installer_path: str) -> bool:
     """Launch Inno Setup installer in silent mode."""
+
     args = [
         installer_path,
         '/CURRENTUSER',
@@ -175,9 +189,8 @@ def _run_installer_silently(installer_path: str) -> bool:
 
 
 def _message_box(title: str, text: str) -> None:
-    """Best-effort message box for interactive update checks (Windows)."""
+    """Best-effort message box (Windows)."""
 
-    # Avoid importing tkinter in frozen builds; use WinAPI directly.
     if os.name != 'nt':
         return
     try:
@@ -190,10 +203,106 @@ def _message_box(title: str, text: str) -> None:
         return
 
 
-def check_for_updates(interactive: bool = True) -> bool:
-    """Check GitHub Releases and run the newest installer if available.
+def _message_box_yes_no(title: str, text: str) -> bool | None:
+    """Return True/False for Yes/No, or None if not supported."""
 
-    Returns True if an installer was launched.
+    if os.name != 'nt':
+        return None
+    try:
+        import ctypes  # local import
+
+        MB_YESNO = 0x0004
+        MB_ICONQUESTION = 0x0020
+        IDYES = 6
+        r = ctypes.windll.user32.MessageBoxW(None, text, title, MB_YESNO | MB_ICONQUESTION)
+        return bool(r == IDYES)
+    except Exception:
+        return None
+
+
+def get_update_info() -> UpdateInfo | None:
+    """Return UpdateInfo if a newer version is available, else None.
+
+    Never raises; errors are logged and treated as "no update".
+    """
+
+    if os.getenv('EXPERIMENTAL_WEB_DISABLE_UPDATE', '').strip() == '1':
+        return None
+
+    try:
+        _log(f'Update check started (current={__version__}).')
+        release = _get_latest_release()
+        if isinstance(release, dict) and release.get('message'):
+            _log(f"GitHub API message: {release.get('message')}")
+
+        release_tag = str(release.get('tag_name', '')).strip()
+        tag = release_tag.lstrip('v').strip()
+        if not tag:
+            _log('Update check: missing tag_name.')
+            return None
+
+        current = _version_obj(__version__)
+        latest = _version_obj(tag)
+        if latest <= current:
+            return None
+
+        exe_asset, checks_asset = _pick_windows_installer_asset(release)
+        if not exe_asset:
+            _log('Update check: missing installer asset in latest release.')
+            return None
+
+        release_url = str(
+            release.get('html_url', '')
+            or f'https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest'
+        )
+
+        return UpdateInfo(
+            current_version=__version__,
+            latest_version=tag,
+            release_tag=release_tag or f'v{tag}',
+            release_url=release_url,
+            installer=exe_asset,
+            checksums=checks_asset,
+        )
+    except Exception:
+        _log('Update check failed: ' + traceback.format_exc().strip())
+        return None
+
+
+def download_installer(info: UpdateInfo) -> str:
+    """Download installer (and verify checksums if available). Returns local path."""
+
+    td = _download_dir()
+    exe_path = os.path.join(td, info.installer.name)
+    _log(f'Downloading installer: {info.installer.url} -> {exe_path}')
+    _download(info.installer.url, exe_path)
+
+    # optional checksum verification
+    if info.checksums:
+        checks_path = os.path.join(td, info.checksums.name)
+        _log(f'Downloading checksums: {info.checksums.url} -> {checks_path}')
+        _download(info.checksums.url, checks_path)
+        checks_txt = open(checks_path, 'r', encoding='utf-8', errors='ignore').read()
+        checks = _parse_checksums_file(checks_txt)
+        expected = checks.get(info.installer.name)
+        if expected:
+            got = _sha256_file(exe_path)
+            if got != expected:
+                _log('Checksum mismatch for installer download.')
+                raise ValueError('SHA256 mismatch')
+
+    return exe_path
+
+
+def launch_installer(installer_path: str) -> bool:
+    return _run_installer_silently(installer_path)
+
+
+def check_for_updates(interactive: bool = True) -> bool:
+    """Interactive update check used by tray / Start menu shortcut.
+
+    If a newer version exists, asks the user and only then downloads & runs the installer.
+    Returns True if installer was launched.
     """
 
     if os.getenv('EXPERIMENTAL_WEB_DISABLE_UPDATE', '').strip() == '1':
@@ -202,62 +311,45 @@ def check_for_updates(interactive: bool = True) -> bool:
         return False
 
     try:
-        _log(f'Interactive update check started (current={__version__}).')
-        release = _get_latest_release()
-        if isinstance(release, dict) and release.get('message'):
-            _log(f"GitHub API message: {release.get('message')}")
-        tag = str(release.get('tag_name', '')).lstrip('v').strip()
-        if not tag:
-            if interactive:
-                _message_box('Aktualizace', 'Nepodařilo se zjistit nejnovější verzi (chybí tag).')
-            return False
-
-        current = _version_obj(__version__)
-        latest = _version_obj(tag)
-        if latest <= current:
+        info = get_update_info()
+        if not info:
             if interactive:
                 _message_box('Aktualizace', f'Máte nejnovější verzi ({__version__}).')
             return False
 
-        exe_asset, checks_asset = _pick_windows_installer_asset(release)
-        if not exe_asset:
-            if interactive:
-                _message_box('Aktualizace', 'V releasu nebyl nalezen instalační soubor (Setup.exe).')
+        if not interactive:
             return False
 
-        td = _download_dir()
-        exe_path = os.path.join(td, exe_asset.name)
-        _log(f'Downloading installer: {exe_asset.url} -> {exe_path}')
-        _download(exe_asset.url, exe_path)
+        answer = _message_box_yes_no(
+            'Aktualizace',
+            f'Nalezena nová verze {info.latest_version}.\n'
+            f'Nainstalovaná verze: {info.current_version}\n\n'
+            'Chcete aktualizovat teď?',
+        )
+        if answer is False:
+            return False
+        if answer is None:
+            _message_box(
+                'Aktualizace',
+                f'Nalezena nová verze {info.latest_version}, ale nelze zobrazit potvrzení.',
+            )
+            return False
 
-            # optional checksum verification
-        if checks_asset:
-            checks_path = os.path.join(td, checks_asset.name)
-            _log(f'Downloading checksums: {checks_asset.url} -> {checks_path}')
-            _download(checks_asset.url, checks_path)
-            checks_txt = open(checks_path, 'r', encoding='utf-8', errors='ignore').read()
-            checks = _parse_checksums_file(checks_txt)
-            expected = checks.get(exe_asset.name)
-            if expected:
-                got = _sha256_file(exe_path)
-                if got != expected:
-                    _log('Checksum mismatch for installer download.')
-                    if interactive:
-                        _message_box('Aktualizace', 'Kontrola integrity selhala (SHA256 nesouhlasí).')
-                    return False
+        try:
+            exe_path = download_installer(info)
+        except Exception:
+            _log('Installer download/verify failed: ' + traceback.format_exc().strip())
+            _message_box('Aktualizace', 'Stažení aktualizace selhalo (síť / integrita).')
+            return False
 
-        ok = _run_installer_silently(exe_path)
+        ok = launch_installer(exe_path)
         if not ok:
             _log('Failed to launch installer.')
-            if interactive:
-                _message_box('Aktualizace', 'Nepodařilo se spustit instalátor aktualizace.')
+            _message_box('Aktualizace', 'Nepodařilo se spustit instalátor aktualizace.')
             return False
 
-        _log(f'Installer launched for update to {tag}.')
-        if interactive:
-            _message_box('Aktualizace', f'Nalezena nová verze {tag}. Spouštím instalátor…')
-        # The interactive checker is usually invoked from a shortcut; exit so the installer
-        # can replace files without the checker holding resources.
+        _log(f'Installer launched for update to {info.latest_version}.')
+        _message_box('Aktualizace', f'Spouštím instalátor verze {info.latest_version}…')
         time.sleep(0.5)
         os._exit(0)
     except Exception:
@@ -268,52 +360,6 @@ def check_for_updates(interactive: bool = True) -> bool:
 
 
 def maybe_update_in_background() -> None:
-    """Best-effort update check. Safe to run in a daemon thread."""
-    if os.getenv('EXPERIMENTAL_WEB_DISABLE_UPDATE', '').strip() == '1':
-        return
+    """Deprecated: kept for backward compatibility (does nothing)."""
 
-    try:
-        _log(f'Background update check started (current={__version__}).')
-        release = _get_latest_release()
-        if isinstance(release, dict) and release.get('message'):
-            _log(f"GitHub API message: {release.get('message')}")
-        tag = str(release.get('tag_name', '')).lstrip('v').strip()
-        if not tag:
-            return
-
-        current = _version_obj(__version__)
-        latest = _version_obj(tag)
-        if latest <= current:
-            return
-
-        exe_asset, checks_asset = _pick_windows_installer_asset(release)
-        if not exe_asset:
-            return
-
-        td = _download_dir()
-        exe_path = os.path.join(td, exe_asset.name)
-        _log(f'Downloading installer: {exe_asset.url} -> {exe_path}')
-        _download(exe_asset.url, exe_path)
-
-        # optional checksum verification
-        if checks_asset:
-            checks_path = os.path.join(td, checks_asset.name)
-            _log(f'Downloading checksums: {checks_asset.url} -> {checks_path}')
-            _download(checks_asset.url, checks_path)
-            checks_txt = open(checks_path, 'r', encoding='utf-8', errors='ignore').read()
-            checks = _parse_checksums_file(checks_txt)
-            expected = checks.get(exe_asset.name)
-            if expected:
-                got = _sha256_file(exe_path)
-                if got != expected:
-                    _log('Checksum mismatch for installer download.')
-                    return
-
-        ok = _run_installer_silently(exe_path)
-        if ok:
-            _log(f'Installer launched for update to {tag}; exiting app.')
-            time.sleep(2.0)
-            os._exit(0)
-    except Exception:
-        _log('Background update check failed: ' + traceback.format_exc().strip())
-        return
+    return
