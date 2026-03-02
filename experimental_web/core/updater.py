@@ -33,6 +33,8 @@ except Exception:  # pragma: no cover
 
 
 from experimental_web.core.version import __version__
+from experimental_web.core.config import UPDATE_OWNER, UPDATE_REPO
+
 
 
 TIMEOUT_S = 10
@@ -43,9 +45,9 @@ def _env(name: str, default: str) -> str:
     return v.strip() if v and v.strip() else default
 
 
-# Defaults (override via env vars for different repos/build pipelines)
-GITHUB_OWNER = _env('EXPERIMENTAL_WEB_UPDATE_OWNER', 'michalneoral')
-GITHUB_REPO = _env('EXPERIMENTAL_WEB_UPDATE_REPO', 'Kinetika-Epoxidace')
+# GitHub updater target (hardcoded for this project)
+GITHUB_OWNER = UPDATE_OWNER
+GITHUB_REPO = UPDATE_REPO
 
 # Expect an asset named like: FAME_EPO_Manager_Setup-<version>.exe
 ASSET_PREFIX = _env('EXPERIMENTAL_WEB_UPDATE_ASSET_PREFIX', 'FAME_EPO_Manager_Setup-')
